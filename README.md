@@ -1,5 +1,11 @@
 # cluster 使用说明
 
+[![Go Report Card](https://goreportcard.com/badge/gopkg.d7z.net/cluster)](https://goreportcard.com/report/gopkg.d7z.net/cluster)
+[![Coverage](https://codecov.io/gh/d7z-team/cluster/graph/badge.svg?token=VNT15HBWN0)](https://codecov.io/gh/d7z-team/cluster)
+[![Tests](https://github.com/d7z-team/cluster/actions/workflows/go-test.yml/badge.svg)](https://github.com/d7z-team/cluster/actions/workflows/go-test.yml)
+[![Godoc](http://img.shields.io/badge/go-documentation-blue.svg?style=flat-square)](https://godocs.io/gopkg.d7z.net/cluster)
+[![LICENSE](https://img.shields.io/github/license/d7z-team/cluster.svg?style=flat-square)](https://github.com/d7z-team/cluster/blob/main/LICENSE)
+
 ## 创建 Cluster
 
 ```go
