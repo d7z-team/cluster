@@ -366,66 +366,6 @@ func TestClusterSchemaPrunesUnknownFields(t *testing.T) {
 	require.JSONEq(t, `{"phase":"Ready"}`, string(statused.Status))
 }
 
-func TestClusterAdmissionCreateFlowMemory(t *testing.T) {
-	c, err := NewClusterFromURL("memory://?node=admission-flow")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, c.Close()) })
-	ctx := testContext(t, 5*time.Second)
-
-	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
-		Resource:   "admissionwidgets",
-		APIVersion: "example.test/v1",
-		Kind:       "AdmissionWidget",
-		Admission: []AdmissionRule{
-			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
-		},
-	})
-	require.NoError(t, err)
-
-	type createResult struct {
-		obj *Object[widgetSpec, widgetStatus]
-		err error
-	}
-	resultCh := make(chan createResult, 1)
-	go func() {
-		obj, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-		resultCh <- createResult{obj: obj, err: err}
-	}()
-
-	watchCtx := testContext(t, 5*time.Second)
-	events, err := c.AdmissionRequests().Watch(watchCtx, WatchOptions{SendInitialEvents: true})
-	require.NoError(t, err)
-
-	var request WatchEvent[AdmissionRequestSpec, AdmissionRequestStatus]
-	for {
-		request = nextWatchEvent(t, events)
-		if request.Type == WatchAdded && request.Object != nil && request.Object.Spec.Name == "alpha" {
-			break
-		}
-	}
-	require.Equal(t, AdmissionPendingPhase, request.Object.Status.Phase)
-	require.Equal(t, []string{"create-check"}, request.Object.Spec.Rules)
-
-	_, err = widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-b"}, CreateOptions{})
-	require.ErrorIs(t, err, ErrAdmissionPending)
-
-	approved, err := c.ApproveAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
-		Rule:    "create-check",
-		Decider: "tester",
-		Message: "ok",
-	})
-	require.NoError(t, err)
-	require.Equal(t, AdmissionCommittedPhase, approved.Status.Phase)
-	require.NotNil(t, approved.Status.TargetObject)
-
-	result := <-resultCh
-	require.NoError(t, result.err)
-	require.NotNil(t, result.obj)
-	require.Equal(t, "alpha", result.obj.Metadata.Name)
-	require.Equal(t, "medium", result.obj.Spec.Size)
-	require.Equal(t, "team-a", result.obj.Spec.Owner)
-}
-
 func TestClusterAdmissionCanceledAndRequestReadonly(t *testing.T) {
 	c, err := NewClusterFromURL("memory://?node=admission-cancel")
 	require.NoError(t, err)
@@ -471,45 +411,6 @@ func TestClusterAdmissionCanceledAndRequestReadonly(t *testing.T) {
 	require.ErrorIs(t, err, ErrUnsupported)
 }
 
-func TestClusterAdmissionExpiresMemory(t *testing.T) {
-	c, err := NewClusterFromURL("memory://?node=admission-expire&admission_timeout=80ms&event_cleanup_interval=20ms")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, c.Close()) })
-
-	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
-		Resource:   "expirewidgets",
-		APIVersion: "example.test/v1",
-		Kind:       "ExpireWidget",
-		Admission: []AdmissionRule{
-			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
-		},
-	})
-	require.NoError(t, err)
-
-	ctx := testContext(t, 5*time.Second)
-	resultCh := make(chan error, 1)
-	go func() {
-		_, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-		resultCh <- err
-	}()
-
-	var errResult error
-	require.Eventually(t, func() bool {
-		select {
-		case errResult = <-resultCh:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 20*time.Millisecond)
-	require.ErrorIs(t, errResult, ErrAdmissionExpired)
-
-	list, err := c.AdmissionRequests().List(ctx, ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, list.Items, 1)
-	require.Equal(t, AdmissionExpiredPhase, list.Items[0].Status.Phase)
-}
-
 func TestClusterAdmissionCreateFlowLocalBackends(t *testing.T) {
 	for _, factory := range localURLFactories() {
 		t.Run(factory.name, func(t *testing.T) {
@@ -546,6 +447,11 @@ func TestClusterAdmissionCreateFlowLocalBackends(t *testing.T) {
 					break
 				}
 			}
+			require.Equal(t, AdmissionPendingPhase, request.Object.Status.Phase)
+			require.Equal(t, []string{"create-check"}, request.Object.Spec.Rules)
+
+			_, err = widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-b"}, CreateOptions{})
+			require.ErrorIs(t, err, ErrAdmissionPending)
 
 			approved, err := c.ApproveAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
 				Rule:    "create-check",
@@ -554,10 +460,13 @@ func TestClusterAdmissionCreateFlowLocalBackends(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.Equal(t, AdmissionCommittedPhase, approved.Status.Phase)
+			require.NotNil(t, approved.Status.TargetObject)
 
 			result := <-resultCh
 			require.NoError(t, result.err)
+			require.NotNil(t, result.obj)
 			require.Equal(t, "alpha", result.obj.Metadata.Name)
+			require.Equal(t, "medium", result.obj.Spec.Size)
 			require.Equal(t, "team-a", result.obj.Spec.Owner)
 		})
 	}
@@ -1212,7 +1121,7 @@ func runClusterURLContract(t *testing.T, factory clusterURLFactory) {
 
 	t.Run("node_api_and_resource_schema", func(t *testing.T) {
 		c := newURLCluster(t, factory, nil)
-		widgets := defineWidgets(t, c, "schemawidgets")
+		_ = defineWidgets(t, c, "schemawidgets")
 		ctx := testContext(t, 5*time.Second)
 
 		node, err := c.CurrentNode(ctx)
@@ -1309,8 +1218,6 @@ func runClusterURLContract(t *testing.T, factory clusterURLFactory) {
 			Kind:       "Master",
 		})
 		require.ErrorIs(t, err, ErrInvalidResource)
-
-		_ = widgets
 	})
 
 	t.Run("watch_replay_and_retention", func(t *testing.T) {
@@ -1531,5 +1438,402 @@ func nextMasterWatchEvent(t *testing.T, events <-chan MasterWatchEvent) MasterWa
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for master watch event")
 		return MasterWatchEvent{}
+	}
+}
+
+func TestClusterAdmissionRejectFlowLocalBackends(t *testing.T) {
+	for _, factory := range localURLFactories() {
+		t.Run(factory.name, func(t *testing.T) {
+			c := newURLCluster(t, factory, nil)
+			ctx := testContext(t, 5*time.Second)
+			widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
+				Resource:   "rejectbackendwidgets",
+				APIVersion: "example.test/v1",
+				Kind:       "RejectBackendWidget",
+				Admission: []AdmissionRule{
+					{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
+				},
+			})
+			require.NoError(t, err)
+
+			type createResult struct {
+				obj *Object[widgetSpec, widgetStatus]
+				err error
+			}
+			resultCh := make(chan createResult, 1)
+			go func() {
+				obj, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
+				resultCh <- createResult{obj: obj, err: err}
+			}()
+
+			watchCtx := testContext(t, 5*time.Second)
+			events, err := c.AdmissionRequests().Watch(watchCtx, WatchOptions{SendInitialEvents: true})
+			require.NoError(t, err)
+
+			var request WatchEvent[AdmissionRequestSpec, AdmissionRequestStatus]
+			for {
+				request = nextWatchEvent(t, events)
+				if request.Type == WatchAdded && request.Object != nil && request.Object.Spec.Name == "alpha" {
+					break
+				}
+			}
+			require.Equal(t, AdmissionPendingPhase, request.Object.Status.Phase)
+
+			rejected, err := c.RejectAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
+				Rule:    "create-check",
+				Decider: "tester",
+				Message: "denied",
+			})
+			require.NoError(t, err)
+			require.Equal(t, AdmissionRejectedPhase, rejected.Status.Phase)
+			require.Equal(t, "create-check", rejected.Status.RejectedRule)
+			require.Equal(t, "denied", rejected.Status.Message)
+
+			result := <-resultCh
+			require.ErrorIs(t, result.err, ErrAdmissionRejected)
+			require.Nil(t, result.obj)
+		})
+	}
+}
+
+func TestClusterRejectAdmissionIdempotent(t *testing.T) {
+	c, err := NewClusterFromURL("memory://?node=reject-idempotent")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	ctx := testContext(t, 5*time.Second)
+	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
+		Resource:   "rejectidemwidgets",
+		APIVersion: "example.test/v1",
+		Kind:       "RejectIdemWidget",
+		Admission: []AdmissionRule{
+			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
+		},
+	})
+	require.NoError(t, err)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
+		resultCh <- err
+	}()
+
+	var list *ObjectList[AdmissionRequestSpec, AdmissionRequestStatus]
+	require.Eventually(t, func() bool {
+		var err error
+		list, err = c.AdmissionRequests().List(ctx, ListOptions{})
+		return err == nil && len(list.Items) == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	reqName := list.Items[0].Metadata.Name
+	_, err = c.RejectAdmission(ctx, reqName, AdmissionDecisionOptions{
+		Rule:    "create-check",
+		Decider: "tester",
+		Message: "denied",
+	})
+	require.NoError(t, err)
+
+	repeated, err := c.RejectAdmission(ctx, reqName, AdmissionDecisionOptions{
+		Rule:    "create-check",
+		Decider: "tester",
+		Message: "double-reject",
+	})
+	require.NoError(t, err)
+	require.Equal(t, AdmissionRejectedPhase, repeated.Status.Phase)
+
+	err = <-resultCh
+	require.ErrorIs(t, err, ErrAdmissionRejected)
+}
+
+func TestUnstructuredWatchMetadata(t *testing.T) {
+	c, err := NewClusterFromURL("memory://?node=unstructured-watchmeta")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	ctx := testContext(t, 5*time.Second)
+	widgets := defineWidgets(t, c, "unstructuredmetawidgets")
+
+	_, err = widgets.Create(ctx, "alpha", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{
+		Labels: Labels{"app": "demo"},
+	})
+	require.NoError(t, err)
+
+	list, err := widgets.List(ctx, ListOptions{})
+	require.NoError(t, err)
+
+	raw, err := c.Unstructured("unstructuredmetawidgets")
+	require.NoError(t, err)
+
+	watchCtx := testContext(t, 3*time.Second)
+	metaEvents, err := raw.WatchMetadata(watchCtx, WatchOptions{
+		Since: list.ResourceVersion,
+		Name:  "alpha",
+	})
+	require.NoError(t, err)
+
+	statusEvents, err := raw.WatchStatus(watchCtx, WatchOptions{
+		Since: list.ResourceVersion,
+		Name:  "alpha",
+	})
+	require.NoError(t, err)
+
+	_, err = raw.Patch(ctx, "alpha", []byte(`{"spec":{"size":"medium"}}`), PatchOptions{})
+	require.NoError(t, err)
+
+	patched, err := raw.PatchMetadata(ctx, "alpha", []byte(`{"labels":{"app":"demo","tier":"frontend"}}`), PatchOptions{})
+	require.NoError(t, err)
+
+	event := nextUnstructuredWatchEvent(t, metaEvents)
+	require.Equal(t, WatchModified, event.Type)
+	require.Equal(t, patched.Metadata.ResourceVersion, event.ResourceVersion)
+	require.True(t, slices.Contains(event.Changed, "metadata.labels"), event.Changed)
+
+	requireNoUnstructuredWatchEvent(t, statusEvents, 300*time.Millisecond)
+}
+
+func TestFieldRawValueEdgeCases(t *testing.T) {
+	obj := &Unstructured{
+		Metadata: Metadata{
+			Name:      "test",
+			Namespace: "ns",
+			Labels:    Labels{"key": "value"},
+		},
+		Spec:   json.RawMessage(`{"nested":{"deep":"found"}}`),
+		Status: json.RawMessage(`{"phase":"Ready"}`),
+	}
+
+	val, ok := fieldRawValue(obj, "metadata.name")
+	require.True(t, ok)
+	require.Equal(t, `"test"`, string(val))
+
+	val, ok = fieldRawValue(obj, "metadata.namespace")
+	require.True(t, ok)
+	require.Equal(t, `"ns"`, string(val))
+
+	_, ok = fieldRawValue(obj, "metadata.labels")
+	require.True(t, ok)
+
+	val, ok = fieldRawValue(obj, "metadata.labels.key")
+	require.True(t, ok)
+	require.Equal(t, `"value"`, string(val))
+
+	val, ok = fieldRawValue(obj, "spec.nested.deep")
+	require.True(t, ok)
+	require.Equal(t, `"found"`, string(val))
+
+	_, ok = fieldRawValue(obj, "spec.nested.missing")
+	require.False(t, ok)
+
+	_, ok = fieldRawValue(obj, "spec")
+	require.False(t, ok)
+
+	val, ok = fieldRawValue(obj, "status.phase")
+	require.True(t, ok)
+	require.Equal(t, `"Ready"`, string(val))
+
+	_, ok = fieldRawValue(obj, "invalid")
+	require.False(t, ok)
+
+	_, ok = fieldRawValue(obj, "invalid.path")
+	require.False(t, ok)
+
+	empty := &Unstructured{}
+	_, ok = fieldRawValue(empty, "spec.missing")
+	require.False(t, ok)
+}
+
+func TestAdmissionRulesEqual(t *testing.T) {
+	require.True(t, admissionRulesEqual(nil, nil))
+	require.False(t, admissionRulesEqual(nil, []AdmissionRule{{Name: "test"}}))
+	require.False(t, admissionRulesEqual([]AdmissionRule{{Name: "test"}}, nil))
+	require.True(t, admissionRulesEqual(
+		[]AdmissionRule{{Name: "a", Operations: []AdmissionOperation{AdmissionCreate}, Subresources: []Subresource{SubresourceSpec}}},
+		[]AdmissionRule{{Name: "a", Operations: []AdmissionOperation{AdmissionCreate}, Subresources: []Subresource{SubresourceSpec}}},
+	))
+	require.False(t, admissionRulesEqual(
+		[]AdmissionRule{{Name: "a"}},
+		[]AdmissionRule{{Name: "b"}},
+	))
+	require.False(t, admissionRulesEqual(
+		[]AdmissionRule{{Name: "a", Timeout: time.Second}},
+		[]AdmissionRule{{Name: "a", Timeout: time.Minute}},
+	))
+	require.False(t, admissionRulesEqual(
+		[]AdmissionRule{{Name: "a", Operations: []AdmissionOperation{AdmissionCreate}}},
+		[]AdmissionRule{{Name: "a", Operations: []AdmissionOperation{AdmissionUpdate}}},
+	))
+	require.False(t, admissionRulesEqual(
+		[]AdmissionRule{{Name: "a", Subresources: []Subresource{SubresourceSpec}}},
+		[]AdmissionRule{{Name: "a", Subresources: []Subresource{SubresourceStatus}}},
+	))
+}
+
+func TestDefinitionEquivalent(t *testing.T) {
+	a := &resourceDefinition{
+		Resource:          "test",
+		APIVersion:        "v1",
+		Kind:              "Test",
+		Namespaced:        true,
+		SchemaFingerprint: "abc123",
+		Admission:         []AdmissionRule{{Name: "check"}},
+	}
+	b := &resourceDefinition{
+		Resource:          "test",
+		APIVersion:        "v1",
+		Kind:              "Test",
+		Namespaced:        true,
+		SchemaFingerprint: "abc123",
+		Admission:         []AdmissionRule{{Name: "check"}},
+	}
+	require.True(t, definitionEquivalent(a, b))
+
+	b.Namespaced = false
+	require.False(t, definitionEquivalent(a, b))
+}
+
+func TestResourceSliceHelpers(t *testing.T) {
+	c, err := NewClusterFromURL("memory://?node=helper-tests")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, c.Close()) })
+
+	_, err = c.Resource("unknown")
+	require.ErrorIs(t, err, ErrInvalidResource)
+
+	_, err = c.Unstructured("unknown")
+	require.ErrorIs(t, err, ErrInvalidResource)
+}
+
+func TestRawScalarString(t *testing.T) {
+	val, ok := rawScalarString(json.RawMessage(`"hello"`))
+	require.True(t, ok)
+	require.Equal(t, "hello", val)
+
+	val, ok = rawScalarString(json.RawMessage(`true`))
+	require.True(t, ok)
+	require.Equal(t, "true", val)
+
+	val, ok = rawScalarString(json.RawMessage(`false`))
+	require.True(t, ok)
+	require.Equal(t, "false", val)
+
+	val, ok = rawScalarString(json.RawMessage(`42`))
+	require.True(t, ok)
+	require.Equal(t, "42", val)
+
+	_, ok = rawScalarString(json.RawMessage(`{"key":"value"}`))
+	require.False(t, ok)
+
+	_, ok = rawScalarString(json.RawMessage(`null`))
+	require.False(t, ok)
+
+	_, ok = rawScalarString(json.RawMessage(`{"key":"value"}`))
+	require.False(t, ok)
+
+	_, ok = rawScalarString(json.RawMessage(`["a","b"]`))
+	require.False(t, ok)
+}
+
+func TestIsEmptyJSONValue(t *testing.T) {
+	require.True(t, isEmptyJSONValue(nil))
+	require.True(t, isEmptyJSONValue(json.RawMessage("null")))
+	require.True(t, isEmptyJSONValue(json.RawMessage(`""`)))
+	require.False(t, isEmptyJSONValue(json.RawMessage(`"hello"`)))
+	require.False(t, isEmptyJSONValue(json.RawMessage(`42`)))
+	require.False(t, isEmptyJSONValue(json.RawMessage(`true`)))
+}
+
+func TestParseRVKey(t *testing.T) {
+	rv := parseRVKey("prefix/resource/events/00000000000000000042")
+	require.Equal(t, uint64(42), rv)
+}
+
+func TestOperationTimeout(t *testing.T) {
+	require.Equal(t, time.Second, operationTimeout(100*time.Millisecond, 30*time.Second))
+	require.Equal(t, time.Second, operationTimeout(1*time.Millisecond, 30*time.Second))
+	require.Equal(t, 2*time.Second, operationTimeout(5*time.Second, 2*time.Second))
+	require.Equal(t, 3*time.Second, operationTimeout(3*time.Second, 30*time.Second))
+}
+
+func TestOptionsNegativeValidation(t *testing.T) {
+	_, err := normalizeOptions(Options{
+		NodeName:         "test",
+		AdmissionTimeout: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+
+	_, err = normalizeOptions(Options{
+		NodeName:                "test",
+		AdmissionRetentionCount: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+
+	_, err = normalizeOptions(Options{
+		NodeName:                   "test",
+		AdmissionTerminalRetention: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+}
+
+func TestDefinitionValidationErrors(t *testing.T) {
+	err := validateDefinition(nil)
+	require.ErrorIs(t, err, ErrInvalidResource)
+
+	err = validateDefinition(&resourceDefinition{
+		Resource:   "test",
+		APIVersion: "/../etc/passwd",
+		Kind:       "Test",
+		Schema:     json.RawMessage(`{}`),
+	})
+	require.ErrorIs(t, err, ErrInvalidResource)
+
+	err = validateDefinition(&resourceDefinition{
+		Resource:   "test",
+		APIVersion: "v1",
+		Kind:       "Bad/Kind",
+		Schema:     json.RawMessage(`{}`),
+	})
+	require.ErrorIs(t, err, ErrInvalidResource)
+
+	err = validateDefinition(&resourceDefinition{
+		Resource:   "test",
+		APIVersion: "v1",
+		Kind:       "Test",
+		Schema:     json.RawMessage(`{}`),
+		Admission: []AdmissionRule{
+			{Name: ""},
+		},
+	})
+	require.ErrorIs(t, err, ErrInvalidResource)
+}
+
+func TestNewClusterNilStore(t *testing.T) {
+	_, err := newCluster(Options{NodeName: "test"}, nil)
+	require.ErrorIs(t, err, ErrInvalidConfig)
+}
+
+func TestOpenEtcdNilClient(t *testing.T) {
+	_, err := OpenEtcd(nil, Options{NodeName: "test"})
+	require.ErrorIs(t, err, ErrInvalidConfig)
+}
+
+func nextUnstructuredWatchEvent(t *testing.T, events <-chan UnstructuredWatchEvent) UnstructuredWatchEvent {
+	t.Helper()
+	select {
+	case event, ok := <-events:
+		require.True(t, ok)
+		return event
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for unstructured watch event")
+		return UnstructuredWatchEvent{}
+	}
+}
+
+func requireNoUnstructuredWatchEvent(t *testing.T, events <-chan UnstructuredWatchEvent, wait time.Duration) {
+	t.Helper()
+	select {
+	case event, ok := <-events:
+		require.True(t, ok)
+		t.Fatalf("unexpected unstructured watch event: %#v", event)
+	case <-time.After(wait):
 	}
 }

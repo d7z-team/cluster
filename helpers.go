@@ -39,7 +39,7 @@ func invalidPathToken(value string) bool {
 	return value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\`)
 }
 
-func validateMetadataWithSchema(meta Metadata, _ map[string]any) error {
+func validateMetadataWithSchema(meta Metadata) error {
 	if meta.Namespace != "" {
 		if err := validateNamespace(meta.Namespace); err != nil {
 			return err
@@ -231,23 +231,20 @@ func cloneMetadata(meta Metadata) Metadata {
 }
 
 func cloneLabels(labels Labels) Labels {
-	if labels == nil {
-		return nil
-	}
-	copied := make(Labels, len(labels))
-	for key, value := range labels {
-		copied[key] = value
-	}
-	return copied
+	return cloneStringMap(labels)
 }
 
 func cloneAnnotations(annotations Annotations) Annotations {
-	if annotations == nil {
+	return cloneStringMap(annotations)
+}
+
+func cloneStringMap[M ~map[string]string](m M) M {
+	if m == nil {
 		return nil
 	}
-	copied := make(Annotations, len(annotations))
-	for key, value := range annotations {
-		copied[key] = value
+	copied := make(M, len(m))
+	for k, v := range m {
+		copied[k] = v
 	}
 	return copied
 }

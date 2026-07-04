@@ -10,8 +10,7 @@
 
 ```go
 c, err := cluster.NewClusterFromURL("memory://?node=worker-a")
-if err != nil {
-	return err
+if err != nil { return err
 }
 defer c.Close()
 ```

@@ -48,11 +48,17 @@ func (h *watchHub) notify(ref objectRef) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, ch := range h.watchers[watchKey(ref.Resource, "")] {
-		notifyChannel(ch)
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 	if ref.Namespace != "" {
 		for _, ch := range h.watchers[watchKey(ref.Resource, ref.Namespace)] {
-			notifyChannel(ch)
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
@@ -70,13 +76,6 @@ func (h *watchHub) close() {
 			close(ch)
 		}
 		delete(h.watchers, key)
-	}
-}
-
-func notifyChannel(ch chan struct{}) {
-	select {
-	case ch <- struct{}{}:
-	default:
 	}
 }
 

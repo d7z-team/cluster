@@ -858,8 +858,6 @@ func (s *etcdStore) advanceCompactedRV(ctx context.Context, before uint64) error
 }
 
 func (s *etcdStore) updateAdmissionRequestTxn(ctx context.Context, ref objectRef, currentRaw []byte, metaRaw string, metaVersion int64, updated *Unstructured, changed []string) (*Unstructured, error) {
-	currentRV := parseStoredRV(updated.Metadata.ResourceVersion)
-	_ = currentRV
 	for attempt := 0; attempt < etcdCommitRetries; attempt++ {
 		out := cloneUnstructured(*updated)
 		current, err := s.client.Get(ctx, s.objectKey(ref), clientv3.WithLimit(1))
@@ -975,11 +973,10 @@ func (s *etcdStore) cleanupAdmissions(ctx context.Context) error {
 func (s *etcdStore) finishAdmission(ctx context.Context, name string, mutate func(spec AdmissionRequestSpec, status *AdmissionRequestStatus)) (*Unstructured, error) {
 	requestRef := objectRef{Resource: ResourceAdmissionRequests, Name: name}
 	for attempt := 0; attempt < etcdCommitRetries; attempt++ {
-		currentRV, metaRaw, metaVersion, err := s.readMetaRV(ctx)
+		_, metaRaw, metaVersion, err := s.readMetaRV(ctx)
 		if err != nil {
 			return nil, err
 		}
-		_ = currentRV
 		requestResp, err := s.client.Get(ctx, s.objectKey(requestRef), clientv3.WithLimit(1))
 		if err != nil {
 			return nil, err

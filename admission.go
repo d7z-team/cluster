@@ -25,7 +25,7 @@ func (c *Cluster) ApproveAdmission(ctx context.Context, name string, opts Admiss
 	if err := c.ensureActive(ctx); err != nil {
 		return nil, err
 	}
-	out, req, err := c.store.approveAdmission(ctx, approveAdmissionRequest{
+	_, req, err := c.store.approveAdmission(ctx, approveAdmissionRequest{
 		Name:        name,
 		Decision:    opts,
 		RequireRule: opts.Rule,
@@ -33,7 +33,6 @@ func (c *Cluster) ApproveAdmission(ctx context.Context, name string, opts Admiss
 	if err != nil {
 		return nil, err
 	}
-	_ = out
 	return unstructuredToTyped[AdmissionRequestSpec, AdmissionRequestStatus](req)
 }
 
@@ -51,10 +50,6 @@ func (c *Cluster) RejectAdmission(ctx context.Context, name string, opts Admissi
 	return unstructuredToTyped[AdmissionRequestSpec, AdmissionRequestStatus](req)
 }
 
-func matchAdmissionRules(def *resourceDefinition, operation AdmissionOperation, subresource Subresource) []AdmissionRule {
-	return def.admissionRules(operation, subresource)
-}
-
 func (r *UnstructuredResource) maybeAdmit(
 	ctx context.Context,
 	operation AdmissionOperation,
@@ -65,7 +60,7 @@ func (r *UnstructuredResource) maybeAdmit(
 	expectedRV uint64,
 	eventAnnotations Annotations,
 ) (*Unstructured, bool, error) {
-	rules := matchAdmissionRules(r.def, operation, subresource)
+	rules := r.def.admissionRules(operation, subresource)
 	if len(rules) == 0 {
 		return nil, false, nil
 	}

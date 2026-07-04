@@ -152,21 +152,22 @@ func watchScopeMatches(scope WatchScope, changed []string) bool {
 	case "", WatchScopeObject:
 		return true
 	case WatchScopeMetadata:
-		return changedPathMatches(changed, "metadata")
+		for _, path := range changed {
+			if path == "metadata" || strings.HasPrefix(path, "metadata.") {
+				return true
+			}
+		}
+		return false
 	case WatchScopeStatus:
-		return changedPathMatches(changed, "status")
+		for _, path := range changed {
+			if path == "status" || strings.HasPrefix(path, "status.") {
+				return true
+			}
+		}
+		return false
 	default:
 		return false
 	}
-}
-
-func changedPathMatches(changed []string, prefix string) bool {
-	for _, path := range changed {
-		if path == prefix || strings.HasPrefix(path, prefix+".") {
-			return true
-		}
-	}
-	return false
 }
 
 func sendWatchEvent(ctx context.Context, out chan<- UnstructuredWatchEvent, event UnstructuredWatchEvent) bool {

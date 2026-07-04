@@ -191,9 +191,7 @@ func buildResourceDefinition(def ResourceDef) (*resourceDefinition, error) {
 			return validateFieldRules(oldObj, newObj, resourceDef.specRules)
 		}
 	}
-	resourceDef.validateMetadata = func(meta Metadata) error {
-		return validateMetadataWithSchema(meta, resourceDef.metadataSchema)
-	}
+	resourceDef.validateMetadata = validateMetadataWithSchema
 	resourceDef.validateMetadataPatch = func(patch []byte) error {
 		return validateMetadataPatchWithSchema(patch, resourceDef.metadataWritable)
 	}
@@ -638,12 +636,10 @@ func validateStructuralNode(path string, node map[string]any) error {
 		}
 	}
 	nodeType, _ := node["type"].(string)
-	if keys, exists := node["x-cluster-index-keys"]; exists {
-		list, ok := keys.([]any)
-		if !ok || nodeType != "object" || (path != "metadata.labels" && path != "metadata.annotations") {
+	if _, exists := node["x-cluster-index-keys"]; exists {
+		if _, ok := node["x-cluster-index-keys"].([]any); !ok || nodeType != "object" || (path != "metadata.labels" && path != "metadata.annotations") {
 			return fmt.Errorf("%w: x-cluster-index-keys only allowed on metadata labels/annotations", ErrInvalidResource)
 		}
-		_ = list
 	}
 	switch nodeType {
 	case "object":
@@ -706,9 +702,10 @@ func collectSchemaRules(path string, node map[string]any, rules *[]fieldRule, de
 			continue
 		}
 		childPath := path + "." + name
+		_, required := required[name]
 		rule := fieldRule{
 			Path:      childPath,
-			Required:  hasRequired(required, name),
+			Required:  required,
 			Immutable: boolValue(child["x-cluster-immutable"]),
 		}
 		if enumValues, ok := child["enum"].([]any); ok {
@@ -760,11 +757,6 @@ func validateNodeDefault(node map[string]any) error {
 		}
 	}
 	return nil
-}
-
-func hasRequired(values map[string]struct{}, key string) bool {
-	_, ok := values[key]
-	return ok
 }
 
 func boolValue(value any) bool {

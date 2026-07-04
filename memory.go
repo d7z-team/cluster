@@ -225,7 +225,7 @@ func (s *memoryStore) approveAdmission(ctx context.Context, req approveAdmission
 		return nil, nil, err
 	}
 	targetCommit.SkipAdmissionLock = true
-	targetOut, targetEvent, err := s.commitLocked(targetCommit)
+	targetOut, _, err := s.commitLocked(targetCommit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -239,7 +239,7 @@ func (s *memoryStore) approveAdmission(ctx context.Context, req approveAdmission
 	if err != nil {
 		return nil, nil, err
 	}
-	requestOut, requestEvent, err := s.commitLocked(commitRequest{
+	requestOut, _, err := s.commitLocked(commitRequest{
 		Op:                commitUpdate,
 		Ref:               requestRef,
 		ExpectedRV:        parseStoredRV(current.Metadata.ResourceVersion),
@@ -254,8 +254,6 @@ func (s *memoryStore) approveAdmission(ctx context.Context, req approveAdmission
 	delete(s.admissionLocks, lockKey)
 	s.hub.notify(targetRef)
 	s.hub.notify(requestRef)
-	_ = targetEvent
-	_ = requestEvent
 	return targetOut, requestOut, nil
 }
 
