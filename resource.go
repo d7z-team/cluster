@@ -57,6 +57,14 @@ func (r *Resource[S, T]) Get(ctx context.Context, name string) (*Object[S, T], e
 	return unstructuredToTyped[S, T](out)
 }
 
+func (r *Resource[S, T]) GetWithOptions(ctx context.Context, name string, opts GetOptions) (*Object[S, T], error) {
+	out, err := r.raw.GetWithOptions(ctx, name, opts)
+	if err != nil {
+		return nil, err
+	}
+	return unstructuredToTyped[S, T](out)
+}
+
 func (r *Resource[S, T]) List(ctx context.Context, opts ListOptions) (*ObjectList[S, T], error) {
 	out, err := r.raw.List(ctx, opts)
 	if err != nil {
@@ -182,6 +190,18 @@ func (r *Resource[S, T]) WatchMetadata(ctx context.Context, opts WatchOptions) (
 func (r *Resource[S, T]) WatchStatus(ctx context.Context, opts WatchOptions) (<-chan WatchEvent[S, T], error) {
 	opts.Scope = WatchScopeStatus
 	return r.Watch(ctx, opts)
+}
+
+func (r *Resource[S, T]) GetScale(ctx context.Context, name string) (*Scale, error) {
+	return r.raw.GetScale(ctx, name)
+}
+
+func (r *Resource[S, T]) UpdateScale(ctx context.Context, name string, scale Scale, opts UpdateOptions) (*Scale, error) {
+	return r.raw.UpdateScale(ctx, name, scale, opts)
+}
+
+func (r *Resource[S, T]) PatchScale(ctx context.Context, name string, patch []byte, opts PatchOptions) (*Scale, error) {
+	return r.raw.PatchScale(ctx, name, patch, opts)
 }
 
 func unstructuredToTyped[S, T any](obj *Unstructured) (*Object[S, T], error) {

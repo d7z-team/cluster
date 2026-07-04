@@ -146,8 +146,7 @@ func (s *memoryStore) beginAdmission(ctx context.Context, req beginAdmissionRequ
 	req.Request.Metadata.UID = uid
 	req.Request.Metadata.ResourceVersion = ""
 	req.Request.Metadata.Generation = 1
-	req.Request.Metadata.CreatedAt = now
-	req.Request.Metadata.UpdatedAt = now
+	req.Request.Metadata.CreationTimestamp = now
 	obj, _, err := s.commitLocked(commitRequest{
 		Op:                commitCreate,
 		Ref:               objectRef{Resource: ResourceAdmissionRequests, Name: req.Request.Metadata.Name},
@@ -622,7 +621,6 @@ func (s *memoryStore) expireAndCleanupAdmissionsLocked(now time.Time) error {
 			if err != nil {
 				return err
 			}
-			updated.Metadata.UpdatedAt = now
 			if _, _, err := s.commitLocked(commitRequest{
 				Op:                commitUpdate,
 				Ref:               objectRef{Resource: ResourceAdmissionRequests, Name: obj.Metadata.Name},
@@ -646,10 +644,10 @@ func (s *memoryStore) expireAndCleanupAdmissionsLocked(now time.Time) error {
 		return nil
 	}
 	sort.Slice(terminal, func(i, j int) bool {
-		return terminal[i].Metadata.UpdatedAt.After(terminal[j].Metadata.UpdatedAt)
+		return terminalAdmissionTimestamp(terminal[i]).After(terminalAdmissionTimestamp(terminal[j]))
 	})
 	for _, obj := range terminal[s.admissionRetention:] {
-		if now.Sub(obj.Metadata.UpdatedAt) < s.admissionTerminalRetention {
+		if now.Sub(terminalAdmissionTimestamp(obj)) < s.admissionTerminalRetention {
 			continue
 		}
 		delete(resource, objectStorageKey(objectRef{Resource: ResourceAdmissionRequests, Name: obj.Metadata.Name}))

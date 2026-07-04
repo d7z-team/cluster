@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -106,11 +108,11 @@ func (r *UnstructuredResource) Create(
 	created.Metadata.UID = uid
 	created.Metadata.ResourceVersion = ""
 	created.Metadata.Generation = 1
-	created.Metadata.CreatedAt = now
-	created.Metadata.UpdatedAt = now
-	created.Metadata.DeletedAt = nil
+	created.Metadata.CreationTimestamp = now
+	created.Metadata.DeletionTimestamp = nil
+	created.Metadata.DeletionGracePeriodSeconds = nil
 	ensureMetadataMaps(&created.Metadata)
-	if err := r.def.validateMetadata(created.Metadata); err != nil {
+	if err := validateOwnerReferencesForDefinition(r.def, created.Metadata); err != nil {
 		return nil, err
 	}
 	if err := validateRawObjectJSON(&created); err != nil {
@@ -137,6 +139,10 @@ func (r *UnstructuredResource) Create(
 }
 
 func (r *UnstructuredResource) Get(ctx context.Context, name string) (*Unstructured, error) {
+	return r.GetWithOptions(ctx, name, GetOptions{})
+}
+
+func (r *UnstructuredResource) GetWithOptions(ctx context.Context, name string, opts GetOptions) (*Unstructured, error) {
 	if err := r.cluster.ensureActive(ctx); err != nil {
 		return nil, err
 	}
@@ -144,7 +150,19 @@ func (r *UnstructuredResource) Get(ctx context.Context, name string) (*Unstructu
 	if err != nil {
 		return nil, err
 	}
-	return r.cluster.store.get(ctx, ref)
+	out, err := r.cluster.store.get(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	requestedRV, err := parseOptionalRV(opts.ResourceVersion)
+	if err != nil {
+		return nil, err
+	}
+	currentRV := parseStoredRV(out.Metadata.ResourceVersion)
+	if err := validateResourceVersionMatch(currentRV, requestedRV, opts.ResourceVersionMatch); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *UnstructuredResource) List(ctx context.Context, opts ListOptions) (*UnstructuredList, error) {
@@ -162,6 +180,13 @@ func (r *UnstructuredResource) List(ctx context.Context, opts ListOptions) (*Uns
 	if err != nil {
 		return nil, err
 	}
+	requestedRV, err := parseOptionalRV(opts.ResourceVersion)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateResourceVersionMatch(rv, requestedRV, opts.ResourceVersionMatch); err != nil {
+		return nil, err
+	}
 	sortUnstructured(objects)
 
 	limit := opts.Limit
@@ -170,23 +195,48 @@ func (r *UnstructuredResource) List(ctx context.Context, opts ListOptions) (*Uns
 	}
 	out := make([]Unstructured, 0, min(limit, len(objects)))
 	started := opts.Continue == ""
+	startAfter := ""
+	if opts.Continue != "" {
+		token, err := decodeContinueToken(opts.Continue)
+		if err != nil {
+			return nil, err
+		}
+		if token.Resource != scope.Resource || token.Namespace != scope.Namespace || token.AllNamespaces != scope.AllNamespaces || token.ResourceVersion != formatRV(rv) || token.SelectorHash != selectorHash(opts.Selector) {
+			return nil, ErrResourceVersionTooOld
+		}
+		startAfter = token.LastCursor
+	}
 	for _, obj := range objects {
 		key := objectCursor(obj)
 		if !started {
-			started = key > opts.Continue
+			started = key > startAfter
 			if !started {
 				continue
 			}
+		}
+		if !opts.IncludeDeleting && obj.Metadata.DeletionTimestamp != nil {
+			continue
 		}
 		if !matchesSelector(obj, opts.Selector) {
 			continue
 		}
 		out = append(out, cloneUnstructured(obj))
 		if len(out) > limit {
+			token, err := encodeContinueToken(continueToken{
+				Resource:        scope.Resource,
+				Namespace:       scope.Namespace,
+				AllNamespaces:   scope.AllNamespaces,
+				ResourceVersion: formatRV(rv),
+				SelectorHash:    selectorHash(opts.Selector),
+				LastCursor:      objectCursor(out[limit-1]),
+			})
+			if err != nil {
+				return nil, err
+			}
 			return &UnstructuredList{
 				Items:           out[:limit],
 				ResourceVersion: formatRV(rv),
-				Continue:        objectCursor(out[limit-1]),
+				Continue:        token,
 			}, nil
 		}
 	}
@@ -452,6 +502,11 @@ func (r *UnstructuredResource) Delete(ctx context.Context, name string, opts Del
 	if err := r.ensureWritable(); err != nil {
 		return nil, err
 	}
+	switch opts.PropagationPolicy {
+	case "", DeletePropagationBackground, DeletePropagationOrphan:
+	default:
+		return nil, ErrInvalidObject
+	}
 	ref, err := r.ref(name)
 	if err != nil {
 		return nil, err
@@ -476,16 +531,26 @@ func (r *UnstructuredResource) Delete(ctx context.Context, name string, opts Del
 		}
 		now := time.Now().UTC()
 		updated := cloneUnstructured(*oldObj)
-		updated.Metadata.DeletedAt = &now
-		updated.Metadata.UpdatedAt = now
-		op := commitDelete
-		eventType := WatchDeleted
-		if len(oldObj.Metadata.Finalizers) > 0 {
-			if oldObj.Metadata.DeletedAt != nil {
-				return cloneUnstructuredPtr(oldObj), nil
+		if opts.PropagationPolicy == DeletePropagationOrphan && oldObj.Metadata.DeletionTimestamp == nil {
+			if err := r.cluster.orphanDependents(ctx, *oldObj); err != nil {
+				return nil, err
 			}
-			op = commitUpdate
-			eventType = WatchModified
+		}
+		if oldObj.Metadata.DeletionTimestamp == nil {
+			updated.Metadata.DeletionTimestamp = &now
+			updated.Metadata.DeletionGracePeriodSeconds = cloneInt64Ptr(opts.GracePeriodSeconds)
+		}
+		op := commitUpdate
+		eventType := WatchModified
+		switch {
+		case oldObj.Metadata.DeletionTimestamp != nil && len(oldObj.Metadata.Finalizers) == 0 && !gracePeriodActive(oldObj.Metadata, now):
+			op = commitDelete
+			eventType = WatchDeleted
+		case oldObj.Metadata.DeletionTimestamp == nil && len(oldObj.Metadata.Finalizers) == 0 && !gracePeriodActive(updated.Metadata, now):
+			op = commitDelete
+			eventType = WatchDeleted
+		case oldObj.Metadata.DeletionTimestamp != nil:
+			return cloneUnstructuredPtr(oldObj), nil
 		}
 		if out, handled, err := r.maybeAdmit(ctx, AdmissionDelete, SubresourceSpec, ref, oldObj, &updated, oldRV, opts.EventAnnotations); handled {
 			return out, err
@@ -528,7 +593,7 @@ func (r *UnstructuredResource) Watch(
 			return nil, err
 		}
 	}
-	startRV, err := parseOptionalRV(opts.Since)
+	startRV, err := parseOptionalRV(opts.ResourceVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -540,12 +605,16 @@ func (r *UnstructuredResource) Watch(
 	if err != nil {
 		return nil, err
 	}
-	if opts.Since == "" && !opts.SendInitialEvents {
-		_, currentRV, err := r.cluster.store.list(ctx, scope)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
+	_, currentRV, err := r.cluster.store.list(ctx, scope)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if startRV > currentRV {
+		cancel()
+		return nil, ErrConflict
+	}
+	if opts.ResourceVersion == "" && !opts.SendInitialEvents {
 		startRV = currentRV
 	}
 
@@ -568,6 +637,101 @@ func (r *UnstructuredResource) WatchStatus(
 ) (<-chan UnstructuredWatchEvent, error) {
 	opts.Scope = WatchScopeStatus
 	return r.Watch(ctx, opts)
+}
+
+func (r *UnstructuredResource) GetScale(ctx context.Context, name string) (*Scale, error) {
+	if r.def.Scale == nil {
+		return nil, ErrUnsupported
+	}
+	obj, err := r.Get(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return r.scaleFromObject(*obj)
+}
+
+func (r *UnstructuredResource) UpdateScale(ctx context.Context, name string, scale Scale, opts UpdateOptions) (*Scale, error) {
+	if r.def.Scale == nil {
+		return nil, ErrUnsupported
+	}
+	raw, err := json.Marshal(map[string]any{"spec": map[string]any{"replicas": scale.Spec.Replicas}})
+	if err != nil {
+		return nil, err
+	}
+	obj, err := r.PatchScale(ctx, name, raw, PatchOptions{ResourceVersion: opts.ResourceVersion, EventAnnotations: opts.EventAnnotations})
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+func (r *UnstructuredResource) PatchScale(ctx context.Context, name string, patch []byte, opts PatchOptions) (*Scale, error) {
+	if r.def.Scale == nil {
+		return nil, ErrUnsupported
+	}
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return nil, ErrInvalidObject
+	}
+	var body struct {
+		Spec struct {
+			Replicas *int32 `json:"replicas"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(patch, &body); err != nil {
+		return nil, err
+	}
+	if body.Spec.Replicas == nil {
+		return nil, ErrInvalidObject
+	}
+	ref, err := r.ref(name)
+	if err != nil {
+		return nil, err
+	}
+	expected, err := parseOptionalRV(opts.ResourceVersion)
+	if err != nil {
+		return nil, err
+	}
+	attempts := 1
+	if expected == 0 {
+		attempts = maxMutationRetries
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		oldObj, err := r.cluster.store.get(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		oldRV := parseStoredRV(oldObj.Metadata.ResourceVersion)
+		if expected != 0 && oldRV != expected {
+			return nil, ErrConflict
+		}
+		updated := cloneUnstructured(*oldObj)
+		updated.Spec, err = setRawFieldPath(updated.Spec, strings.TrimPrefix(r.def.Scale.SpecReplicasPath, "spec."), *body.Spec.Replicas)
+		if err != nil {
+			return nil, err
+		}
+		updated, err = r.prepareSpecUpdate(*oldObj, updated)
+		if err != nil {
+			return nil, err
+		}
+		out, err := r.commit(ctx, commitRequest{
+			Op:               commitUpdate,
+			Ref:              ref,
+			ExpectedRV:       oldRV,
+			Object:           &updated,
+			EventType:        WatchModified,
+			EventAnnotations: opts.EventAnnotations,
+			Changed:          changedPaths(oldObj, &updated, SubresourceScale),
+		})
+		if err == nil {
+			return r.scaleFromObject(*out)
+		}
+		if !errors.Is(err, ErrConflict) || expected != 0 {
+			return nil, err
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 func (r *UnstructuredResource) mutateStatus(
@@ -598,7 +762,6 @@ func (r *UnstructuredResource) mutateStatus(
 		updated.APIVersion = oldObj.APIVersion
 		updated.Kind = oldObj.Kind
 		updated.Metadata = cloneMetadata(oldObj.Metadata)
-		updated.Metadata.UpdatedAt = time.Now().UTC()
 		if err := r.def.pruneObject(&updated); err != nil {
 			return nil, err
 		}
@@ -648,9 +811,20 @@ func (r *UnstructuredResource) prepareMetadataUpdate(oldObj Unstructured, patch 
 	updated.Metadata.Labels = cloneLabels(metadata.Labels)
 	updated.Metadata.Annotations = cloneAnnotations(metadata.Annotations)
 	updated.Metadata.Finalizers = append([]string(nil), metadata.Finalizers...)
-	updated.Metadata.UpdatedAt = time.Now().UTC()
+	updated.Metadata.OwnerReferences = append([]OwnerReference(nil), metadata.OwnerReferences...)
+	if oldObj.Metadata.DeletionTimestamp != nil {
+		if hasNewFinalizers(oldObj.Metadata.Finalizers, updated.Metadata.Finalizers) {
+			return Unstructured{}, fmt.Errorf("%w: finalizers can only be removed while deleting", ErrInvalidObject)
+		}
+		updated.Metadata.Finalizers = filterExistingFinalizers(oldObj.Metadata.Finalizers, updated.Metadata.Finalizers)
+		if !reflect.DeepEqual(updated.Metadata.OwnerReferences, oldObj.Metadata.OwnerReferences) {
+			return Unstructured{}, fmt.Errorf("%w: ownerReferences are immutable while deleting", ErrInvalidObject)
+		}
+	}
+	updated.Metadata.DeletionTimestamp = cloneTimePtr(oldObj.Metadata.DeletionTimestamp)
+	updated.Metadata.DeletionGracePeriodSeconds = cloneInt64Ptr(oldObj.Metadata.DeletionGracePeriodSeconds)
 	ensureMetadataMaps(&updated.Metadata)
-	if err := r.def.validateMetadata(updated.Metadata); err != nil {
+	if err := validateOwnerReferencesForDefinition(r.def, updated.Metadata); err != nil {
 		return Unstructured{}, err
 	}
 	if err := r.def.validateObject(&oldObj, &updated, SubresourceMetadata); err != nil {
@@ -666,19 +840,21 @@ func (r *UnstructuredResource) prepareSpecUpdate(oldObj, input Unstructured) (Un
 	if input.Metadata.UID != "" && input.Metadata.UID != oldObj.Metadata.UID {
 		return Unstructured{}, fmt.Errorf("%w: uid is immutable", ErrInvalidObject)
 	}
-	if input.Metadata.CreatedAt.IsZero() {
-		input.Metadata.CreatedAt = oldObj.Metadata.CreatedAt
+	if input.Metadata.CreationTimestamp.IsZero() {
+		input.Metadata.CreationTimestamp = oldObj.Metadata.CreationTimestamp
 	}
-	if !input.Metadata.CreatedAt.Equal(oldObj.Metadata.CreatedAt) {
-		return Unstructured{}, fmt.Errorf("%w: createdAt is immutable", ErrInvalidObject)
+	if !input.Metadata.CreationTimestamp.Equal(oldObj.Metadata.CreationTimestamp) {
+		return Unstructured{}, fmt.Errorf("%w: creationTimestamp is immutable", ErrInvalidObject)
 	}
-	if input.Metadata.DeletedAt != nil && oldObj.Metadata.DeletedAt == nil {
-		return Unstructured{}, fmt.Errorf("%w: deletedAt is managed by Delete", ErrInvalidObject)
+	if input.Metadata.DeletionTimestamp != nil && oldObj.Metadata.DeletionTimestamp == nil {
+		return Unstructured{}, fmt.Errorf("%w: deletionTimestamp is managed by Delete", ErrInvalidObject)
 	}
-	if input.Metadata.DeletedAt == nil && oldObj.Metadata.DeletedAt != nil {
-		return Unstructured{}, fmt.Errorf("%w: deletedAt is immutable", ErrInvalidObject)
+	if input.Metadata.DeletionTimestamp == nil && oldObj.Metadata.DeletionTimestamp != nil {
+		return Unstructured{}, fmt.Errorf("%w: deletionTimestamp is immutable", ErrInvalidObject)
 	}
-	updatedAt := time.Now().UTC()
+	if oldObj.Metadata.DeletionTimestamp != nil {
+		return Unstructured{}, fmt.Errorf("%w: spec is immutable while deleting", ErrInvalidObject)
+	}
 	updated := cloneUnstructured(input)
 	restoreManagedFields := func() {
 		updated.APIVersion = oldObj.APIVersion
@@ -687,14 +863,14 @@ func (r *UnstructuredResource) prepareSpecUpdate(oldObj, input Unstructured) (Un
 		updated.Metadata.Name = oldObj.Metadata.Name
 		updated.Metadata.UID = oldObj.Metadata.UID
 		updated.Metadata.ResourceVersion = oldObj.Metadata.ResourceVersion
-		updated.Metadata.CreatedAt = oldObj.Metadata.CreatedAt
-		updated.Metadata.UpdatedAt = updatedAt
-		updated.Metadata.DeletedAt = cloneTimePtr(oldObj.Metadata.DeletedAt)
+		updated.Metadata.CreationTimestamp = oldObj.Metadata.CreationTimestamp
+		updated.Metadata.DeletionTimestamp = cloneTimePtr(oldObj.Metadata.DeletionTimestamp)
+		updated.Metadata.DeletionGracePeriodSeconds = cloneInt64Ptr(oldObj.Metadata.DeletionGracePeriodSeconds)
 		updated.Status = cloneRaw(oldObj.Status)
 		ensureMetadataMaps(&updated.Metadata)
 	}
 	restoreManagedFields()
-	if err := r.def.validateMetadata(updated.Metadata); err != nil {
+	if err := validateOwnerReferencesForDefinition(r.def, updated.Metadata); err != nil {
 		return Unstructured{}, err
 	}
 	if err := r.def.defaultObject(&updated); err != nil {
@@ -704,7 +880,7 @@ func (r *UnstructuredResource) prepareSpecUpdate(oldObj, input Unstructured) (Un
 		return Unstructured{}, err
 	}
 	restoreManagedFields()
-	if err := r.def.validateMetadata(updated.Metadata); err != nil {
+	if err := validateOwnerReferencesForDefinition(r.def, updated.Metadata); err != nil {
 		return Unstructured{}, err
 	}
 	if err := validateRawObjectJSON(&updated); err != nil {
@@ -738,6 +914,23 @@ func (r *UnstructuredResource) ref(name string) (objectRef, error) {
 		return objectRef{}, err
 	}
 	return objectRef{Resource: r.def.Resource, Namespace: namespace, Name: name}, nil
+}
+
+func (r *UnstructuredResource) scaleFromObject(obj Unstructured) (*Scale, error) {
+	if r.def.Scale == nil {
+		return nil, ErrUnsupported
+	}
+	specReplicas, _ := int32FieldValue(&obj, r.def.Scale.SpecReplicasPath)
+	statusReplicas, _ := int32FieldValue(&obj, r.def.Scale.StatusReplicasPath)
+	selector, _ := fieldStringValue(&obj, r.def.Scale.LabelSelectorPath)
+	return &Scale{
+		Metadata: cloneMetadata(obj.Metadata),
+		Spec:     ScaleSpec{Replicas: specReplicas},
+		Status: ScaleStatus{
+			Replicas: statusReplicas,
+			Selector: selector,
+		},
+	}, nil
 }
 
 func (r *UnstructuredResource) writeNamespace(namespace string) (string, error) {

@@ -169,7 +169,7 @@ func TestEtcdEventCleanupRunsOnlyOnMaster(t *testing.T) {
 	}
 
 	replayCtx, replayCancel := context.WithTimeout(context.Background(), time.Second)
-	replayEvents, err := widgets.Watch(replayCtx, WatchOptions{Since: since})
+	replayEvents, err := widgets.Watch(replayCtx, WatchOptions{ResourceVersion: since})
 	require.NoError(t, err)
 	event := nextWatchEvent(t, replayEvents)
 	replayCancel()
@@ -191,7 +191,7 @@ func TestEtcdEventCleanupRunsOnlyOnMaster(t *testing.T) {
 		}
 	}
 	waitForWatchError(t, 4*time.Second, func(ctx context.Context) (<-chan WatchEvent[widgetSpec, widgetStatus], error) {
-		return widgets.Watch(ctx, WatchOptions{Since: since})
+		return widgets.Watch(ctx, WatchOptions{ResourceVersion: since})
 	}, ErrResourceVersionTooOld)
 }
 

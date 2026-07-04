@@ -542,6 +542,12 @@ func (c *Cluster) cleanupEventsIfMaster(ctx context.Context) {
 	if errors.Is(err, context.Canceled) || errors.Is(err, ErrClosed) || errors.Is(err, ErrNodeLeaseLost) {
 		return
 	}
+	if err == nil {
+		err = c.cleanupLifecycle(cleanupCtx)
+		if errors.Is(err, context.Canceled) || errors.Is(err, ErrClosed) || errors.Is(err, ErrNodeLeaseLost) {
+			return
+		}
+	}
 	c.setCleanupError(err)
 }
 
@@ -639,6 +645,7 @@ func resourceInfo(def *resourceDefinition) ResourceInfo {
 		Namespaced: def.Namespaced,
 		Schema:     cloneRaw(def.Schema),
 		Indexes:    append([]IndexInfo(nil), def.Indexes...),
+		Selectable: append([]SelectableField(nil), def.Selectable...),
 		Admission:  cloneAdmissionRules(def.Admission),
 		Builtin:    def.Builtin,
 	}

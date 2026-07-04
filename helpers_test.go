@@ -246,10 +246,10 @@ func TestRVKey(t *testing.T) {
 }
 
 func TestObjectCursor(t *testing.T) {
-	require.Equal(t, "v1/Test/ns/name", objectCursor(Unstructured{
+	require.Equal(t, "ns\x00name\x00uid-1", objectCursor(Unstructured{
 		APIVersion: "v1",
 		Kind:       "Test",
-		Metadata:   Metadata{Namespace: "ns", Name: "name"},
+		Metadata:   Metadata{Namespace: "ns", Name: "name", UID: "uid-1"},
 	}))
 }
 
@@ -428,7 +428,7 @@ func TestAdmissionTargetCommit(t *testing.T) {
 			Metadata: Metadata{Name: "alpha", Finalizers: []string{"cleanup"}},
 		}
 		newObj := Unstructured{
-			Metadata: Metadata{Name: "alpha", DeletedAt: &now, Finalizers: []string{"cleanup"}},
+			Metadata: Metadata{Name: "alpha", DeletionTimestamp: &now, Finalizers: []string{"cleanup"}},
 		}
 		req, target, err := admissionTargetCommit(AdmissionRequestSpec{
 			Operation: AdmissionDelete,
@@ -602,12 +602,12 @@ func TestChangedPaths(t *testing.T) {
 		require.NotContains(t, paths, "spec.size")
 	})
 
-	t.Run("deletedAt_changed", func(t *testing.T) {
+	t.Run("deletionTimestamp_changed", func(t *testing.T) {
 		now := time.Now().UTC()
 		oldObj := &Unstructured{Metadata: Metadata{Name: "test"}, Spec: json.RawMessage(`{}`)}
-		newObj := &Unstructured{Metadata: Metadata{Name: "test", DeletedAt: &now}, Spec: json.RawMessage(`{}`)}
+		newObj := &Unstructured{Metadata: Metadata{Name: "test", DeletionTimestamp: &now}, Spec: json.RawMessage(`{}`)}
 		paths := changedPaths(oldObj, newObj, SubresourceSpec)
-		require.Contains(t, paths, "metadata.deletedAt")
+		require.Contains(t, paths, "metadata.deletionTimestamp")
 	})
 }
 

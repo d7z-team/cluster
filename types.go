@@ -88,17 +88,27 @@ type Object[S, T any] struct {
 }
 
 type Metadata struct {
-	Namespace       string      `json:"namespace,omitempty"`
-	Name            string      `json:"name"`
-	UID             string      `json:"uid"`
-	ResourceVersion string      `json:"resourceVersion"`
-	Generation      int64       `json:"generation"`
-	CreatedAt       time.Time   `json:"createdAt"`
-	UpdatedAt       time.Time   `json:"updatedAt"`
-	DeletedAt       *time.Time  `json:"deletedAt,omitempty"`
-	Labels          Labels      `json:"labels,omitempty"`
-	Annotations     Annotations `json:"annotations,omitempty"`
-	Finalizers      []string    `json:"finalizers,omitempty"`
+	Namespace                  string           `json:"namespace,omitempty"`
+	Name                       string           `json:"name"`
+	UID                        string           `json:"uid"`
+	ResourceVersion            string           `json:"resourceVersion"`
+	Generation                 int64            `json:"generation"`
+	CreationTimestamp          time.Time        `json:"creationTimestamp"`
+	DeletionTimestamp          *time.Time       `json:"deletionTimestamp,omitempty"`
+	DeletionGracePeriodSeconds *int64           `json:"deletionGracePeriodSeconds,omitempty"`
+	Labels                     Labels           `json:"labels,omitempty"`
+	Annotations                Annotations      `json:"annotations,omitempty"`
+	Finalizers                 []string         `json:"finalizers,omitempty"`
+	OwnerReferences            []OwnerReference `json:"ownerReferences,omitempty"`
+}
+
+type OwnerReference struct {
+	UID                string `json:"uid"`
+	Resource           string `json:"resource"`
+	Namespace          string `json:"namespace,omitempty"`
+	Name               string `json:"name"`
+	Controller         bool   `json:"controller,omitempty"`
+	BlockOwnerDeletion bool   `json:"blockOwnerDeletion,omitempty"`
 }
 
 type NodeSpec struct {
@@ -180,7 +190,29 @@ const (
 	SubresourceSpec     Subresource = "spec"
 	SubresourceMetadata Subresource = "metadata"
 	SubresourceStatus   Subresource = "status"
+	SubresourceScale    Subresource = "scale"
 )
+
+type ScaleDefinition struct {
+	SpecReplicasPath   string
+	StatusReplicasPath string
+	LabelSelectorPath  string
+}
+
+type Scale struct {
+	Metadata Metadata    `json:"metadata"`
+	Spec     ScaleSpec   `json:"spec"`
+	Status   ScaleStatus `json:"status"`
+}
+
+type ScaleSpec struct {
+	Replicas int32 `json:"replicas"`
+}
+
+type ScaleStatus struct {
+	Replicas int32  `json:"replicas"`
+	Selector string `json:"selector,omitempty"`
+}
 
 type CreateOptions struct {
 	Labels           Labels
@@ -199,24 +231,35 @@ type PatchOptions struct {
 	EventAnnotations Annotations
 }
 
+type GetOptions struct {
+	ResourceVersion      string
+	ResourceVersionMatch ResourceVersionMatch
+}
+
 type DeleteOptions struct {
-	ResourceVersion  string
-	EventAnnotations Annotations
+	ResourceVersion    string
+	GracePeriodSeconds *int64
+	PropagationPolicy  DeletionPropagation
+	EventAnnotations   Annotations
 }
 
 type ListOptions struct {
-	Limit    int
-	Continue string
-	Selector Selector
+	ResourceVersion      string
+	ResourceVersionMatch ResourceVersionMatch
+	Limit                int
+	Continue             string
+	Selector             Selector
+	IncludeDeleting      bool
 }
 
 type WatchOptions struct {
 	Name              string
-	Since             string
+	ResourceVersion   string
 	Selector          Selector
 	Scope             WatchScope
 	AllowBookmarks    bool
 	SendInitialEvents bool
+	IncludeDeleting   bool
 }
 
 type WatchScope string
@@ -270,6 +313,7 @@ type ResourceInfo struct {
 	Namespaced bool
 	Schema     json.RawMessage
 	Indexes    []IndexInfo
+	Selectable []SelectableField
 	Admission  []AdmissionRule
 	Builtin    bool
 }
@@ -277,6 +321,25 @@ type ResourceInfo struct {
 type IndexInfo struct {
 	Path string
 }
+
+type SelectableField struct {
+	Path string `json:"path"`
+}
+
+type ResourceVersionMatch string
+
+const (
+	ResourceVersionAny          ResourceVersionMatch = ""
+	ResourceVersionExact        ResourceVersionMatch = "Exact"
+	ResourceVersionNotOlderThan ResourceVersionMatch = "NotOlderThan"
+)
+
+type DeletionPropagation string
+
+const (
+	DeletePropagationBackground DeletionPropagation = "Background"
+	DeletePropagationOrphan     DeletionPropagation = "Orphan"
+)
 
 type AdmissionOperation string
 

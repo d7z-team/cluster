@@ -3,6 +3,7 @@ package cluster
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,15 @@ import (
 	"strings"
 	"time"
 )
+
+type continueToken struct {
+	Resource        string `json:"resource"`
+	Namespace       string `json:"namespace,omitempty"`
+	AllNamespaces   bool   `json:"allNamespaces,omitempty"`
+	ResourceVersion string `json:"resourceVersion"`
+	SelectorHash    string `json:"selectorHash"`
+	LastCursor      string `json:"lastCursor"`
+}
 
 func validateResourceName(name string) error {
 	if invalidPathToken(name) {
@@ -45,10 +55,59 @@ func validateMetadataWithSchema(meta Metadata) error {
 			return err
 		}
 	}
+	if meta.Name != "" {
+		if err := validateObjectName(meta.Name); err != nil {
+			return err
+		}
+	}
 	if err := validateMetadataKeys(meta.Labels); err != nil {
 		return err
 	}
-	return validateMetadataKeys(meta.Annotations)
+	if err := validateMetadataKeys(meta.Annotations); err != nil {
+		return err
+	}
+	controllerOwners := 0
+	for _, owner := range meta.OwnerReferences {
+		if err := validateObjectName(owner.Name); err != nil {
+			return err
+		}
+		if owner.Namespace != "" {
+			if err := validateNamespace(owner.Namespace); err != nil {
+				return err
+			}
+		}
+		if invalidPathToken(owner.Resource) || strings.TrimSpace(owner.UID) == "" {
+			return fmt.Errorf("%w: invalid owner reference", ErrInvalidObject)
+		}
+		if owner.Controller {
+			controllerOwners++
+			if controllerOwners > 1 {
+				return fmt.Errorf("%w: only one controller owner reference is allowed", ErrInvalidObject)
+			}
+		}
+	}
+	return nil
+}
+
+func validateOwnerReferencesForDefinition(def *resourceDefinition, meta Metadata) error {
+	if err := validateMetadataWithSchema(meta); err != nil {
+		return err
+	}
+	for _, owner := range meta.OwnerReferences {
+		switch {
+		case def == nil:
+			continue
+		case def.Namespaced:
+			if owner.Namespace != meta.Namespace {
+				return fmt.Errorf("%w: ownerReferences must stay in the same namespace", ErrInvalidObject)
+			}
+		default:
+			if owner.Namespace != "" {
+				return fmt.Errorf("%w: cluster-scoped resources cannot reference namespaced owners", ErrInvalidObject)
+			}
+		}
+	}
+	return nil
 }
 
 func validateMetadataKeys(values map[string]string) error {
@@ -144,6 +203,23 @@ func parseStoredRV(value string) uint64 {
 	return rv
 }
 
+func validateResourceVersionMatch(currentRV, requestedRV uint64, match ResourceVersionMatch) error {
+	switch match {
+	case ResourceVersionAny, ResourceVersionNotOlderThan:
+		if requestedRV > currentRV {
+			return ErrConflict
+		}
+		return nil
+	case ResourceVersionExact:
+		if requestedRV == 0 || requestedRV != currentRV {
+			return ErrResourceVersionTooOld
+		}
+		return nil
+	default:
+		return ErrInvalidObject
+	}
+}
+
 func formatRV(rv uint64) string {
 	if rv == 0 {
 		return ""
@@ -162,7 +238,7 @@ func parseRVKey(key string) uint64 {
 }
 
 func objectCursor(obj Unstructured) string {
-	return obj.APIVersion + "/" + obj.Kind + "/" + obj.Metadata.Namespace + "/" + obj.Metadata.Name
+	return obj.Metadata.Namespace + "\x00" + obj.Metadata.Name + "\x00" + obj.Metadata.UID
 }
 
 func objectStorageKey(ref objectRef) string {
@@ -223,10 +299,12 @@ func cloneUnstructured(obj Unstructured) Unstructured {
 
 func cloneMetadata(meta Metadata) Metadata {
 	copied := meta
-	copied.DeletedAt = cloneTimePtr(meta.DeletedAt)
+	copied.DeletionTimestamp = cloneTimePtr(meta.DeletionTimestamp)
+	copied.DeletionGracePeriodSeconds = cloneInt64Ptr(meta.DeletionGracePeriodSeconds)
 	copied.Labels = cloneLabels(meta.Labels)
 	copied.Annotations = cloneAnnotations(meta.Annotations)
 	copied.Finalizers = append([]string(nil), meta.Finalizers...)
+	copied.OwnerReferences = append([]OwnerReference(nil), meta.OwnerReferences...)
 	return copied
 }
 
@@ -255,6 +333,10 @@ func fieldRawValue(obj *Unstructured, path string) (json.RawMessage, bool) {
 		return mustMarshalRaw(obj.Metadata.Namespace), true
 	case "metadata.name":
 		return mustMarshalRaw(obj.Metadata.Name), true
+	case "metadata.uid":
+		return mustMarshalRaw(obj.Metadata.UID), true
+	case "metadata.generation":
+		return mustMarshalRaw(obj.Metadata.Generation), true
 	}
 	if strings.HasPrefix(path, "metadata.") {
 		raw, err := json.Marshal(obj.Metadata)
@@ -535,6 +617,76 @@ func cloneTimePtr(value *time.Time) *time.Time {
 	return &copied
 }
 
+func cloneInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+func gracePeriodActive(meta Metadata, now time.Time) bool {
+	if meta.DeletionTimestamp == nil || meta.DeletionGracePeriodSeconds == nil || *meta.DeletionGracePeriodSeconds <= 0 {
+		return false
+	}
+	deadline := meta.DeletionTimestamp.Add(time.Duration(*meta.DeletionGracePeriodSeconds) * time.Second)
+	return deadline.After(now)
+}
+
+func hasNewFinalizers(oldFinalizers, newFinalizers []string) bool {
+	oldSet := make(map[string]struct{}, len(oldFinalizers))
+	for _, value := range oldFinalizers {
+		oldSet[value] = struct{}{}
+	}
+	for _, value := range newFinalizers {
+		if _, ok := oldSet[value]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func filterExistingFinalizers(oldFinalizers, requested []string) []string {
+	requestedSet := make(map[string]struct{}, len(requested))
+	for _, value := range requested {
+		requestedSet[value] = struct{}{}
+	}
+	out := make([]string, 0, len(requested))
+	for _, value := range oldFinalizers {
+		if _, ok := requestedSet[value]; ok {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func filterOwnerReferences(refs []OwnerReference, uid string) []OwnerReference {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := refs[:0]
+	for _, ref := range refs {
+		if ref.UID != uid {
+			out = append(out, ref)
+		}
+	}
+	return append([]OwnerReference(nil), out...)
+}
+
+func terminalAdmissionTimestamp(obj Unstructured) time.Time {
+	spec, status, err := decodeAdmissionRequest(obj)
+	if err != nil {
+		return obj.Metadata.CreationTimestamp
+	}
+	if status.Phase == AdmissionPendingPhase {
+		return spec.ExpiresAt
+	}
+	if !status.DecidedAt.IsZero() {
+		return status.DecidedAt
+	}
+	return obj.Metadata.CreationTimestamp
+}
+
 func ensureMetadataMaps(meta *Metadata) {
 	if meta.Labels == nil {
 		meta.Labels = Labels{}
@@ -583,6 +735,9 @@ func changedPaths(oldObj, newObj *Unstructured, subresource Subresource) []strin
 	if subresource == SubresourceStatus {
 		return sortedUnique(changedJSONPaths("status", oldObj.Status, newObj.Status))
 	}
+	if subresource == SubresourceScale {
+		return sortedUnique(changedJSONPaths("spec", oldObj.Spec, newObj.Spec))
+	}
 	if !reflect.DeepEqual(oldObj.Metadata.Labels, newObj.Metadata.Labels) {
 		changed = append(changed, "metadata.labels")
 	}
@@ -595,9 +750,15 @@ func changedPaths(oldObj, newObj *Unstructured, subresource Subresource) []strin
 	if oldObj.Metadata.Namespace != newObj.Metadata.Namespace {
 		changed = append(changed, "metadata.namespace")
 	}
-	if (oldObj.Metadata.DeletedAt == nil) != (newObj.Metadata.DeletedAt == nil) ||
-		oldObj.Metadata.DeletedAt != nil && !oldObj.Metadata.DeletedAt.Equal(*newObj.Metadata.DeletedAt) {
-		changed = append(changed, "metadata.deletedAt")
+	if !reflect.DeepEqual(oldObj.Metadata.OwnerReferences, newObj.Metadata.OwnerReferences) {
+		changed = append(changed, "metadata.ownerReferences")
+	}
+	if (oldObj.Metadata.DeletionTimestamp == nil) != (newObj.Metadata.DeletionTimestamp == nil) ||
+		oldObj.Metadata.DeletionTimestamp != nil && !oldObj.Metadata.DeletionTimestamp.Equal(*newObj.Metadata.DeletionTimestamp) {
+		changed = append(changed, "metadata.deletionTimestamp")
+	}
+	if !reflect.DeepEqual(oldObj.Metadata.DeletionGracePeriodSeconds, newObj.Metadata.DeletionGracePeriodSeconds) {
+		changed = append(changed, "metadata.deletionGracePeriodSeconds")
 	}
 	changed = append(changed, changedJSONPaths("spec", oldObj.Spec, newObj.Spec)...)
 	return sortedUnique(changed)
@@ -640,6 +801,43 @@ func rawObjectFields(raw json.RawMessage) (map[string]json.RawMessage, bool) {
 		values[key] = cloneRaw(value)
 	}
 	return values, true
+}
+
+func setRawFieldPath(raw json.RawMessage, path string, value any) (json.RawMessage, error) {
+	root := map[string]any{}
+	if len(bytes.TrimSpace(raw)) > 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &root); err != nil {
+			return nil, err
+		}
+	}
+	current := root
+	segments := strings.Split(path, ".")
+	for _, segment := range segments[:len(segments)-1] {
+		next, ok := current[segment].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			current[segment] = next
+		}
+		current = next
+	}
+	current[segments[len(segments)-1]] = value
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func int32FieldValue(obj *Unstructured, path string) (int32, bool) {
+	raw, ok := fieldRawValue(obj, path)
+	if !ok {
+		return 0, false
+	}
+	var value int32
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	return value, true
 }
 
 func sortedUnique(values []string) []string {
@@ -689,6 +887,41 @@ func normalizeStorePrefix(prefix string) string {
 		return ""
 	}
 	return prefix + "/"
+}
+
+func selectorHash(selector Selector) string {
+	if len(selector.requirements) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(selector.requirements)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func encodeContinueToken(token continueToken) (string, error) {
+	raw, err := json.Marshal(token)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func decodeContinueToken(value string) (continueToken, error) {
+	if strings.TrimSpace(value) == "" {
+		return continueToken{}, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return continueToken{}, fmt.Errorf("%w: invalid continue token", ErrInvalidObject)
+	}
+	var token continueToken
+	if err := json.Unmarshal(raw, &token); err != nil {
+		return continueToken{}, fmt.Errorf("%w: invalid continue token", ErrInvalidObject)
+	}
+	return token, nil
 }
 
 func lockKeyFromRef(ref objectRef) string {
@@ -746,7 +979,7 @@ func admissionTargetCommit(spec AdmissionRequestSpec) (commitRequest, *Unstructu
 			return commitRequest{}, nil, ErrInvalidObject
 		}
 		req.ExpectedRV = expectedRV
-		if len(spec.OldObject.Metadata.Finalizers) > 0 && spec.OldObject.Metadata.DeletedAt == nil {
+		if len(spec.OldObject.Metadata.Finalizers) > 0 && spec.OldObject.Metadata.DeletionTimestamp == nil {
 			req.Op = commitUpdate
 			req.EventType = WatchModified
 			req.Changed = changedPaths(spec.OldObject, &target, SubresourceSpec)

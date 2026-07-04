@@ -41,8 +41,7 @@ func (s *etcdStore) beginAdmission(ctx context.Context, req beginAdmissionReques
 	req.Request.Metadata.UID = token
 	req.Request.Metadata.ResourceVersion = ""
 	req.Request.Metadata.Generation = 1
-	req.Request.Metadata.CreatedAt = now
-	req.Request.Metadata.UpdatedAt = now
+	req.Request.Metadata.CreationTimestamp = now
 	requestRef := objectRef{Resource: ResourceAdmissionRequests, Name: req.Request.Metadata.Name}
 	lockKey := s.admissionLockKey(req.Target)
 	for attempt := 0; attempt < etcdCommitRetries; attempt++ {
@@ -327,7 +326,6 @@ func (s *etcdStore) approveAdmission(ctx context.Context, req approveAdmissionRe
 		}
 		requestOut := cloneUnstructured(*requestUpdated)
 		requestOut.Metadata.ResourceVersion = formatRV(requestRV)
-		requestOut.Metadata.UpdatedAt = now
 		requestOutRaw, err := json.Marshal(requestOut)
 		if err != nil {
 			return nil, nil, err
@@ -431,7 +429,6 @@ func (s *etcdStore) updateAdmissionRequestTxn(ctx context.Context, ref objectRef
 		}
 		nextRV := rv + 1
 		out.Metadata.ResourceVersion = formatRV(nextRV)
-		out.Metadata.UpdatedAt = time.Now().UTC()
 		objectRaw, err := json.Marshal(out)
 		if err != nil {
 			return nil, err
@@ -495,7 +492,6 @@ func (s *etcdStore) finishFailedAdmissionTxn(
 	nextRV := currentRV + 1
 	out := cloneUnstructured(*updated)
 	out.Metadata.ResourceVersion = formatRV(nextRV)
-	out.Metadata.UpdatedAt = time.Now().UTC()
 	objectRaw, err := json.Marshal(out)
 	if err != nil {
 		return nil, err
@@ -573,10 +569,10 @@ func (s *etcdStore) cleanupAdmissions(ctx context.Context) error {
 		return nil
 	}
 	sort.Slice(terminal, func(i, j int) bool {
-		return terminal[i].Metadata.UpdatedAt.After(terminal[j].Metadata.UpdatedAt)
+		return terminalAdmissionTimestamp(terminal[i]).After(terminalAdmissionTimestamp(terminal[j]))
 	})
 	for _, obj := range terminal[s.admissionRetention:] {
-		if now.Sub(obj.Metadata.UpdatedAt) < s.admissionTerminalRetention {
+		if now.Sub(terminalAdmissionTimestamp(obj)) < s.admissionTerminalRetention {
 			continue
 		}
 		if err := s.deleteAdmissionRequest(ctx, obj.Metadata.Name); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrConflict) {
@@ -640,7 +636,6 @@ func (s *etcdStore) finishAdmission(ctx context.Context, name string, mutate fun
 		nextRV := currentRV + 1
 		out := cloneUnstructured(*updated)
 		out.Metadata.ResourceVersion = formatRV(nextRV)
-		out.Metadata.UpdatedAt = time.Now().UTC()
 		objectRaw, err := json.Marshal(out)
 		if err != nil {
 			return nil, err

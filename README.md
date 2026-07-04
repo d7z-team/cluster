@@ -160,14 +160,16 @@ _ = rawWidgets
 - `metadata.name` 创建时指定，之后不可变。
 - namespaced 资源的 `metadata.namespace` 由 `Namespace("x")` 句柄决定，之后不可变。
 - cluster-scoped 资源不能带 namespace。
-- `uid`、`resourceVersion`、`generation`、`createdAt`、`updatedAt`、`deletedAt` 全部由 cluster 管理。
-- `labels`、`annotations`、`finalizers` 是当前唯一允许写入的 metadata 字段。
+- `uid`、`resourceVersion`、`generation`、`creationTimestamp`、`deletionTimestamp`、`deletionGracePeriodSeconds` 全部由 cluster 管理。
+- `labels`、`annotations`、`finalizers`、`ownerReferences` 是允许通过 metadata 子资源写入的字段。
 
 写入约束：
 
-- `PatchMetadata` 只允许改 `labels`、`annotations`、`finalizers`。
-- 主资源 `Create/Update/Patch` 也只能修改这三类 metadata 可写字段。
-- `deletedAt` 只能通过 `Delete` 路径进入。
+- `PatchMetadata` 只允许改 `labels`、`annotations`、`finalizers`、`ownerReferences`。
+- 主资源 `Create/Update/Patch` 也只能修改这些 metadata 可写字段。
+- `deletionTimestamp` 只能通过 `Delete` 路径进入。
+- 对象进入 deleting 后不能再改 `spec`。
+- 对象进入 deleting 后 `finalizers` 只能减少，不能新增。
 - metadata key 不能为空，不能包含 `\x00`。
 
 ## Status 与 Generation 规则
@@ -182,10 +184,10 @@ _ = rawWidgets
 
 当前 field selector 的允许范围：
 
-- 默认允许 `metadata.name`。
+- 默认允许 `metadata.name`、`metadata.uid`、`metadata.generation`、`metadata.deletionTimestamp`。
 - namespaced 资源额外允许 `metadata.namespace`。
-- schema 声明了 `x-cluster-index` 的 `spec.*` 和 `status.*` 字段允许查询。
-- schema 声明了 `x-cluster-index-keys` 的 `metadata.labels.<key>` 和 `metadata.annotations.<key>` 允许查询。
+- schema 声明了 `x-cluster-index` 的 `spec.*` 和 `status.*` 字段会自动进入 `Selectable`。
+- 资源定义也可以显式声明额外的 `Selectable` 字段。
 
 限制：
 
@@ -246,9 +248,10 @@ _ = rawWidgets
   - 对象从不匹配变为匹配时返回 `ADDED`
   - 对象持续匹配时返回 `MODIFIED`
   - 对象从匹配变为不匹配或被删除时返回 `DELETED`
-- `Since` 太旧时返回 `ErrResourceVersionTooOld`。
+- `WatchOptions.ResourceVersion` 太旧时返回 `ErrResourceVersionTooOld`。
 - `SendInitialEvents=true` 会先发当前对象的 synthetic `ADDED`，然后发 `BOOKMARK`。
 - `AllowBookmarks=true` 允许返回 bookmark 事件；同一 `resourceVersion` 不会重复发送 bookmark。
+- watch 默认忽略正在 deleting 的对象；设置 `IncludeDeleting=true` 可包含它们。
 
 ## 当前未支持范围
 
@@ -365,10 +368,14 @@ if err != nil {
 - `Create` 创建完整对象。
 - `Update` 更新主资源，不允许通过主资源改 `status`。
 - `Patch` 使用 JSON merge patch。
-- `PatchMetadata` 只允许改 `labels`、`annotations`、`finalizers`。
+- `PatchMetadata` 只允许改 `labels`、`annotations`、`finalizers`、`ownerReferences`。
 - `UpdateStatus` / `PatchStatus` 只修改 `status`。
 - `resourceVersion` 是 CAS 条件；传入时必须精确匹配。
-- 有 finalizer 的对象第一次删除只会设置 `deletedAt`，finalizer 清空后再次删除才会真正移除。
+- 有 finalizer 或非零 grace period 的对象第一次删除只会进入 deleting 状态并设置 `deletionTimestamp`。
+- deleting 对象在 finalizer 清空且 grace period 到期后由后台清理物理移除。
+- `PropagationPolicy=Orphan` 会先移除 dependent 的 `ownerReferences`，再删除 owner。
+
+如需按资源版本读取单对象，可使用 `GetWithOptions` 并传入 `GetOptions{ResourceVersion, ResourceVersionMatch}`。
 
 ## List 与 Selector
 
@@ -392,14 +399,15 @@ if err != nil {
 - 默认允许 `metadata.name`。
 - namespaced 资源额外允许 `metadata.namespace`。
 - `spec.*`、`status.*` 必须在 schema 中声明 `x-cluster-index`，或通过 `cluster:"index"` 生成。
-- `metadata.labels.<key>` 和 `metadata.annotations.<key>` 必须由 schema 显式声明可索引 key。
 - 未声明索引的字段用于 `Field(...)` 会直接返回 `ErrInvalidObject`。
+- `ListOptions.Continue` 是绑定到 snapshot `resourceVersion` 的 token；snapshot 被后续写入打断后会返回 `ErrResourceVersionTooOld`。
+- `ListOptions.IncludeDeleting=true` 可以把 deleting 对象包含在 list 结果里。
 
 ## Watch
 
 ```go
 events, err := widgets.Watch(ctx, cluster.WatchOptions{
-	Since:             list.ResourceVersion,
+	ResourceVersion:   list.ResourceVersion,
 	AllowBookmarks:    true,
 	SendInitialEvents: true,
 })
@@ -408,14 +416,14 @@ if err != nil {
 }
 
 metadataEvents, err := widgets.WatchMetadata(ctx, cluster.WatchOptions{
-	Since: list.ResourceVersion,
+	ResourceVersion: list.ResourceVersion,
 })
 if err != nil {
 	return err
 }
 
 statusEvents, err := widgets.WatchStatus(ctx, cluster.WatchOptions{
-	Since: list.ResourceVersion,
+	ResourceVersion: list.ResourceVersion,
 })
 if err != nil {
 	return err
@@ -431,6 +439,16 @@ _, _, _ = events, metadataEvents, statusEvents
 - `WatchStatus` 只返回 status 变化。
 - 支持 `ADDED`、`MODIFIED`、`DELETED`、`BOOKMARK`、`ERROR`。
 - `SendInitialEvents=true` 会先返回当前对象的 synthetic `ADDED`，再返回 `BOOKMARK`。
+
+## Scale 子资源
+
+资源定义可以声明 `Scale` 投影：
+
+- `SpecReplicasPath`
+- `StatusReplicasPath`
+- `LabelSelectorPath`
+
+声明后可使用 `GetScale`、`UpdateScale`、`PatchScale`，并保持 `status` 与主资源写入边界分离。
 
 ## Admission
 
@@ -583,7 +601,7 @@ if err != nil {
 }
 
 watch, err := c.WatchMaster(ctx, cluster.WatchOptions{
-	Since: master.ResourceVersion,
+	ResourceVersion: master.ResourceVersion,
 })
 if err != nil {
 	return err

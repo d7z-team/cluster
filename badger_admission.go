@@ -49,8 +49,7 @@ func (s *badgerStore) beginAdmission(ctx context.Context, req beginAdmissionRequ
 	req.Request.Metadata.UID = token
 	req.Request.Metadata.ResourceVersion = ""
 	req.Request.Metadata.Generation = 1
-	req.Request.Metadata.CreatedAt = now
-	req.Request.Metadata.UpdatedAt = now
+	req.Request.Metadata.CreationTimestamp = now
 	var out Unstructured
 	err = s.db.Update(func(txn *badger.Txn) error {
 		if _, exists, err := s.getAdmissionLockTxn(txn, req.Target); err != nil {
@@ -387,7 +386,6 @@ func (s *badgerStore) updateAdmissionRequestTxn(txn *badger.Txn, ref objectRef, 
 	nextRV := rv + 1
 	out := cloneUnstructured(*updated)
 	out.Metadata.ResourceVersion = formatRV(nextRV)
-	out.Metadata.UpdatedAt = time.Now().UTC()
 	raw, err := json.Marshal(out)
 	if err != nil {
 		return nil, err
@@ -443,7 +441,6 @@ func (s *badgerStore) cleanupAdmissionsTxn(ctx context.Context, txn *badger.Txn,
 			if err != nil {
 				return nil, err
 			}
-			updated.Metadata.UpdatedAt = now
 			objPtr, err := s.updateAdmissionRequestTxn(txn, objectRef{Resource: ResourceAdmissionRequests, Name: obj.Metadata.Name}, obj.Metadata.ResourceVersion, updated, []string{"status"})
 			if err != nil {
 				return nil, err
@@ -462,10 +459,10 @@ func (s *badgerStore) cleanupAdmissionsTxn(ctx context.Context, txn *badger.Txn,
 		return notify, nil
 	}
 	sort.Slice(terminal, func(i, j int) bool {
-		return terminal[i].Metadata.UpdatedAt.After(terminal[j].Metadata.UpdatedAt)
+		return terminalAdmissionTimestamp(terminal[i]).After(terminalAdmissionTimestamp(terminal[j]))
 	})
 	for _, obj := range terminal[s.admissionRetention:] {
-		if now.Sub(obj.Metadata.UpdatedAt) < s.admissionTerminalRetention {
+		if now.Sub(terminalAdmissionTimestamp(obj)) < s.admissionTerminalRetention {
 			continue
 		}
 		if err := txn.Delete([]byte(s.objectKey(objectRef{Resource: ResourceAdmissionRequests, Name: obj.Metadata.Name}))); err != nil && !errors.Is(err, badger.ErrKeyNotFound) {

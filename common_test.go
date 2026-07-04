@@ -243,7 +243,7 @@ func runClusterURLContract(t *testing.T, factory clusterURLFactory) {
 		list, err := widgets.List(ctx, ListOptions{})
 		require.NoError(t, err)
 		watchCtx := testContext(t, 3*time.Second)
-		events, err := widgets.Watch(watchCtx, WatchOptions{Since: list.ResourceVersion})
+		events, err := widgets.Watch(watchCtx, WatchOptions{ResourceVersion: list.ResourceVersion})
 		require.NoError(t, err)
 		_, err = widgets.Patch(ctx, "alpha", []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
 		require.NoError(t, err)

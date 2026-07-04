@@ -80,7 +80,7 @@ func TestBadgerEventCleanupDeletesLargeBacklogInBatches(t *testing.T) {
 	}
 
 	waitForWatchError(t, 3*time.Second, func(ctx context.Context) (<-chan WatchEvent[widgetSpec, widgetStatus], error) {
-		return batch.Watch(ctx, WatchOptions{Since: "1"})
+		return batch.Watch(ctx, WatchOptions{ResourceVersion: "1"})
 	}, ErrResourceVersionTooOld)
 }
 

@@ -63,9 +63,9 @@
 //			Annotation("team").Eq("platform"),
 //		),
 //	})
-//	events, _ := widgets.Watch(ctx, WatchOptions{Since: list.ResourceVersion})
-//	metadataEvents, _ := widgets.WatchMetadata(ctx, WatchOptions{Since: list.ResourceVersion})
-//	statusEvents, _ := widgets.WatchStatus(ctx, WatchOptions{Since: list.ResourceVersion})
+//	events, _ := widgets.Watch(ctx, WatchOptions{ResourceVersion: list.ResourceVersion})
+//	metadataEvents, _ := widgets.WatchMetadata(ctx, WatchOptions{ResourceVersion: list.ResourceVersion})
+//	statusEvents, _ := widgets.WatchStatus(ctx, WatchOptions{ResourceVersion: list.ResourceVersion})
 //	_, _, _ = events, metadataEvents, statusEvents
 //
 //	guardedWidgets, _ := Define(c, TypedResourceDef[WidgetSpec, WidgetStatus]{
@@ -123,7 +123,7 @@
 //	master, _ := c.Master(ctx)
 //	isMaster, _ := c.IsMaster(ctx)
 //	history, _ := c.MasterHistory(ctx, 20)
-//	masterEvents, _ := c.WatchMaster(ctx, WatchOptions{Since: master.ResourceVersion})
+//	masterEvents, _ := c.WatchMaster(ctx, WatchOptions{ResourceVersion: master.ResourceVersion})
 //	_, _, _, _ = isMaster, history, masterEvents, master
 //
 //	rawWidgets, _ := c.Unstructured("widgets")

@@ -676,13 +676,13 @@ func TestUnstructuredWatchMetadata(t *testing.T) {
 
 	watchCtx := testContext(t, 3*time.Second)
 	metaEvents, err := raw.WatchMetadata(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  "alpha",
 	})
 	require.NoError(t, err)
 
 	statusEvents, err := raw.WatchStatus(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  "alpha",
 	})
 	require.NoError(t, err)
@@ -791,7 +791,7 @@ func TestClusterCRUDAndStatus(t *testing.T) {
 
 	deleting, err := widgets.Delete(ctx, "alpha", DeleteOptions{})
 	require.NoError(t, err)
-	require.NotNil(t, deleting.Metadata.DeletedAt)
+	require.NotNil(t, deleting.Metadata.DeletionTimestamp)
 	_, err = widgets.Get(ctx, "alpha")
 	require.NoError(t, err)
 
@@ -957,9 +957,9 @@ func TestClusterNamespacedResources(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidObject)
 
 	watchCtx := testContext(t, 5*time.Second)
-	teamAEvents, err := teamA.Watch(watchCtx, WatchOptions{Since: listAll.ResourceVersion})
+	teamAEvents, err := teamA.Watch(watchCtx, WatchOptions{ResourceVersion: listAll.ResourceVersion})
 	require.NoError(t, err)
-	allEvents, err := all.Watch(watchCtx, WatchOptions{Since: listAll.ResourceVersion})
+	allEvents, err := all.Watch(watchCtx, WatchOptions{ResourceVersion: listAll.ResourceVersion})
 	require.NoError(t, err)
 
 	patchedB, err := teamB.Patch(ctx, "same", []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
@@ -1034,7 +1034,7 @@ func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
 
 	watchCtx := testContext(t, 3*time.Second)
 	events, err := widgets.Watch(watchCtx, WatchOptions{
-		Since:    list.ResourceVersion,
+		ResourceVersion:    list.ResourceVersion,
 		Name:     "alpha",
 		Selector: Where(Annotation("tenant").Eq("t1"), Field("spec.size").Eq("large")),
 	})
@@ -1084,12 +1084,12 @@ func TestClusterWatchMetadataAndStatusScopes(t *testing.T) {
 
 	watchCtx := testContext(t, 4*time.Second)
 	metadataEvents, err := widgets.WatchMetadata(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  "alpha",
 	})
 	require.NoError(t, err)
 	statusEvents, err := widgets.WatchStatus(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  "alpha",
 	})
 	require.NoError(t, err)
@@ -1155,7 +1155,7 @@ func TestClusterMasterAPIHistoryAndWatch(t *testing.T) {
 	require.Equal(t, c.options.NodeName, history[0].To)
 
 	watchCtx := testContext(t, 4*time.Second)
-	events, err := c.WatchMaster(watchCtx, WatchOptions{Since: master.ResourceVersion})
+	events, err := c.WatchMaster(watchCtx, WatchOptions{ResourceVersion: master.ResourceVersion})
 	require.NoError(t, err)
 
 	require.NoError(t, c.StepDown(ctx))
@@ -1179,7 +1179,7 @@ func TestClusterMasterAPIHistoryAndWatch(t *testing.T) {
 	require.Equal(t, masterTransitionReleased, history[0].Reason)
 
 	replayCtx := testContext(t, 4*time.Second)
-	replayEvents, err := c.WatchMaster(replayCtx, WatchOptions{Since: master.ResourceVersion})
+	replayEvents, err := c.WatchMaster(replayCtx, WatchOptions{ResourceVersion: master.ResourceVersion})
 	require.NoError(t, err)
 	event = nextMasterWatchEvent(t, replayEvents)
 	require.Equal(t, WatchModified, event.Type)
@@ -1204,7 +1204,7 @@ func TestClusterNodeAPIAndResourceSchema(t *testing.T) {
 
 	watchCtx := testContext(t, 4*time.Second)
 	metadataEvents, err := nodes.WatchMetadata(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  c.options.NodeName,
 	})
 	require.NoError(t, err)
@@ -1305,7 +1305,7 @@ func TestClusterWatchReplayAndRetention(t *testing.T) {
 	require.NoError(t, err)
 
 	watchCtx := testContext(t, 3*time.Second)
-	events, err := widgets.Watch(watchCtx, WatchOptions{Since: list.ResourceVersion})
+	events, err := widgets.Watch(watchCtx, WatchOptions{ResourceVersion: list.ResourceVersion})
 	require.NoError(t, err)
 
 	created, err := widgets.Create(ctx, "two", widgetSpec{Size: "small"}, CreateOptions{
@@ -1328,7 +1328,7 @@ func TestClusterWatchReplayAndRetention(t *testing.T) {
 	require.Equal(t, WatchDeleted, event.Type)
 
 	waitForWatchError(t, 3*time.Second, func(ctx context.Context) (<-chan WatchEvent[widgetSpec, widgetStatus], error) {
-		return widgets.Watch(ctx, WatchOptions{Since: "1"})
+		return widgets.Watch(ctx, WatchOptions{ResourceVersion: "1"})
 	}, ErrResourceVersionTooOld)
 }
 
@@ -1354,7 +1354,7 @@ func TestClusterUnstructuredHandle(t *testing.T) {
 
 	watchCtx := testContext(t, 3*time.Second)
 	statusEvents, err := raw.WatchStatus(watchCtx, WatchOptions{
-		Since: list.ResourceVersion,
+		ResourceVersion: list.ResourceVersion,
 		Name:  "alpha",
 	})
 	require.NoError(t, err)

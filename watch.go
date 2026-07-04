@@ -34,6 +34,9 @@ func (r *UnstructuredResource) watchLoop(
 			if opts.Name != "" && obj.Metadata.Name != opts.Name {
 				continue
 			}
+			if !opts.IncludeDeleting && obj.Metadata.DeletionTimestamp != nil {
+				continue
+			}
 			if !matchesSelector(obj, opts.Selector) {
 				continue
 			}
@@ -121,8 +124,8 @@ func (r *UnstructuredResource) drainEvents(
 			if !watchScopeMatches(opts.Scope, event.Changed) {
 				continue
 			}
-			oldMatches := event.OldObject != nil && matchesSelector(*event.OldObject, opts.Selector)
-			newMatches := event.Type != WatchDeleted && event.Object != nil && matchesSelector(*event.Object, opts.Selector)
+			oldMatches := event.OldObject != nil && (opts.IncludeDeleting || event.OldObject.Metadata.DeletionTimestamp == nil) && matchesSelector(*event.OldObject, opts.Selector)
+			newMatches := event.Type != WatchDeleted && event.Object != nil && (opts.IncludeDeleting || event.Object.Metadata.DeletionTimestamp == nil) && matchesSelector(*event.Object, opts.Selector)
 			if !oldMatches && !newMatches {
 				continue
 			}

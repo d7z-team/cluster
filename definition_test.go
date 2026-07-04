@@ -186,8 +186,8 @@ func TestCollectSchemaIndexes(t *testing.T) {
 	}
 	collectSchemaIndexes("spec", node, &indexes)
 	require.Len(t, indexes, 2)
-	require.Equal(t, "spec.size", indexes[0].Path)
-	require.Equal(t, "spec.nested.deep", indexes[1].Path)
+	paths := []string{indexes[0].Path, indexes[1].Path}
+	require.ElementsMatch(t, []string{"spec.size", "spec.nested.deep"}, paths)
 }
 
 func TestTypeOf(t *testing.T) {

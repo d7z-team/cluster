@@ -110,10 +110,19 @@ func allowsFieldSelector(def *resourceDefinition, path string) bool {
 		return true
 	case "metadata.namespace":
 		return def != nil && def.Namespaced
+	case "metadata.uid", "metadata.generation", "metadata.deletionTimestamp":
+		return true
 	}
-	for _, index := range def.Indexes {
-		if index.Path == path {
+	for _, field := range def.Selectable {
+		if field.Path == path {
 			return true
+		}
+	}
+	if len(def.Selectable) == 0 {
+		for _, index := range def.Indexes {
+			if index.Path == path {
+				return true
+			}
 		}
 	}
 	return false

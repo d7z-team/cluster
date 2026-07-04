@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -16,8 +17,10 @@ type ResourceDef struct {
 	Kind       string
 	Namespaced bool
 
-	Schema    json.RawMessage
-	Admission []AdmissionRule
+	Schema     json.RawMessage
+	Admission  []AdmissionRule
+	Selectable []SelectableField
+	Scale      *ScaleDefinition
 }
 
 type TypedResourceDef[S, T any] struct {
@@ -26,8 +29,10 @@ type TypedResourceDef[S, T any] struct {
 	Kind       string
 	Namespaced bool
 
-	Schema    json.RawMessage
-	Admission []AdmissionRule
+	Schema     json.RawMessage
+	Admission  []AdmissionRule
+	Selectable []SelectableField
+	Scale      *ScaleDefinition
 }
 
 type resourceDefinition struct {
@@ -41,6 +46,8 @@ type resourceDefinition struct {
 	SchemaFingerprint string
 	Admission         []AdmissionRule
 	Indexes           []IndexInfo
+	Selectable        []SelectableField
+	Scale             *ScaleDefinition
 	admissionMatches  map[string][]AdmissionRule
 	metadataRules     []fieldRule
 	specRules         []fieldRule
@@ -153,6 +160,8 @@ func buildResourceDefinition(def ResourceDef) (*resourceDefinition, error) {
 		Admission:         cloneAdmissionRules(def.Admission),
 		admissionMatches:  compileAdmissionRules(def.Admission),
 		Indexes:           indexes,
+		Selectable:        mergedSelectableFields(def.Selectable, indexes),
+		Scale:             cloneScaleDefinition(def.Scale),
 		metadataRules:     metadataRules,
 		specRules:         specRules,
 		statusRules:       statusRules,
@@ -214,6 +223,8 @@ func buildTypedDefinition[S, T any](def TypedResourceDef[S, T]) (*resourceDefini
 		Namespaced: def.Namespaced,
 		Schema:     schema,
 		Admission:  def.Admission,
+		Selectable: def.Selectable,
+		Scale:      def.Scale,
 	})
 	if err != nil {
 		return nil, err
@@ -259,13 +270,13 @@ func typeOf[T any]() reflect.Type {
 
 func metadataSchema(namespaced bool) map[string]any {
 	properties := map[string]any{
-		"name":            map[string]any{"type": "string"},
-		"uid":             map[string]any{"type": "string"},
-		"resourceVersion": map[string]any{"type": "string"},
-		"generation":      map[string]any{"type": "integer"},
-		"createdAt":       map[string]any{"type": "string", "format": "date-time"},
-		"updatedAt":       map[string]any{"type": "string", "format": "date-time"},
-		"deletedAt":       map[string]any{"type": "string", "format": "date-time"},
+		"name":                       map[string]any{"type": "string"},
+		"uid":                        map[string]any{"type": "string"},
+		"resourceVersion":            map[string]any{"type": "string"},
+		"generation":                 map[string]any{"type": "integer"},
+		"creationTimestamp":          map[string]any{"type": "string", "format": "date-time"},
+		"deletionTimestamp":          map[string]any{"type": "string", "format": "date-time"},
+		"deletionGracePeriodSeconds": map[string]any{"type": "integer"},
 		"labels": map[string]any{
 			"type":                        "object",
 			"additionalProperties":        map[string]any{"type": "string"},
@@ -281,6 +292,22 @@ func metadataSchema(namespaced bool) map[string]any {
 		"finalizers": map[string]any{
 			"type":                        "array",
 			"items":                       map[string]any{"type": "string"},
+			"x-cluster-metadata-writable": true,
+		},
+		"ownerReferences": map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"uid":                map[string]any{"type": "string"},
+					"resource":           map[string]any{"type": "string"},
+					"namespace":          map[string]any{"type": "string"},
+					"name":               map[string]any{"type": "string"},
+					"controller":         map[string]any{"type": "boolean"},
+					"blockOwnerDeletion": map[string]any{"type": "boolean"},
+				},
+				"additionalProperties": false,
+			},
 			"x-cluster-metadata-writable": true,
 		},
 	}
@@ -807,12 +834,54 @@ func cloneAdmissionRules(in []AdmissionRule) []AdmissionRule {
 	return out
 }
 
+func cloneScaleDefinition(in *ScaleDefinition) *ScaleDefinition {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func mergedSelectableFields(explicit []SelectableField, indexes []IndexInfo) []SelectableField {
+	if len(explicit) == 0 && len(indexes) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(explicit)+len(indexes))
+	out := make([]SelectableField, 0, len(explicit)+len(indexes))
+	for _, field := range explicit {
+		if strings.TrimSpace(field.Path) == "" {
+			continue
+		}
+		if _, ok := seen[field.Path]; ok {
+			continue
+		}
+		seen[field.Path] = struct{}{}
+		out = append(out, field)
+	}
+	for _, index := range indexes {
+		if strings.TrimSpace(index.Path) == "" {
+			continue
+		}
+		if _, ok := seen[index.Path]; ok {
+			continue
+		}
+		seen[index.Path] = struct{}{}
+		out = append(out, SelectableField{Path: index.Path})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
 func definitionEquivalent(a, b *resourceDefinition) bool {
 	return a.Resource == b.Resource &&
 		a.APIVersion == b.APIVersion &&
 		a.Kind == b.Kind &&
 		a.Namespaced == b.Namespaced &&
 		a.SchemaFingerprint == b.SchemaFingerprint &&
+		reflect.DeepEqual(a.Selectable, b.Selectable) &&
+		reflect.DeepEqual(a.Scale, b.Scale) &&
 		admissionRulesEqual(a.Admission, b.Admission)
 }
 
