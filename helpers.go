@@ -345,14 +345,7 @@ func isEmptyJSONValue(raw json.RawMessage) bool {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return false
 	}
-	switch v := value.(type) {
-	case nil:
-		return true
-	case string:
-		return v == ""
-	default:
-		return false
-	}
+	return value == nil
 }
 
 func rawScalarString(raw json.RawMessage) (string, bool) {
