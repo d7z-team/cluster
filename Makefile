@@ -2,7 +2,7 @@ GOPATH := $(shell go env GOPATH)
 GOARCH ?= $(shell go env GOARCH)
 
 .PHONY: deps
-deps: etcd redis
+deps: etcd
 
 .PHONY: etcd
 etcd:
