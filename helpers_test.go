@@ -241,7 +241,7 @@ func TestParseStoredRV(t *testing.T) {
 	require.Equal(t, uint64(0), parseStoredRV("invalid"))
 }
 
-func TestRvKey(t *testing.T) {
+func TestRVKey(t *testing.T) {
 	require.Equal(t, "00000000000000000042", rvKey(42))
 }
 
@@ -315,7 +315,7 @@ func TestSortedUnique(t *testing.T) {
 	require.Equal(t, []string{"a", "b", "c"}, result)
 }
 
-func TestJsonEqual(t *testing.T) {
+func TestJSONEqual(t *testing.T) {
 	require.True(t, jsonEqual(nil, nil))
 	require.True(t, jsonEqual(json.RawMessage(`{"a":1}`), json.RawMessage(`{"a":1}`)))
 	require.True(t, jsonEqual(json.RawMessage(``), json.RawMessage(`   `)))
@@ -423,11 +423,12 @@ func TestAdmissionTargetCommit(t *testing.T) {
 	})
 
 	t.Run("delete_with_finalizers", func(t *testing.T) {
+		now := time.Now().UTC()
 		oldObj := Unstructured{
 			Metadata: Metadata{Name: "alpha", Finalizers: []string{"cleanup"}},
 		}
 		newObj := Unstructured{
-			Metadata: Metadata{Name: "alpha", DeletedAt: timePtr(time.Now().UTC()), Finalizers: []string{"cleanup"}},
+			Metadata: Metadata{Name: "alpha", DeletedAt: &now, Finalizers: []string{"cleanup"}},
 		}
 		req, target, err := admissionTargetCommit(AdmissionRequestSpec{
 			Operation: AdmissionDelete,
@@ -555,8 +556,8 @@ func TestNewStoreEvent(t *testing.T) {
 		EventAnnotations: Annotations{"a": "1"},
 		Changed:          []string{"spec.size"},
 	}
-	obj := &Unstructured{Metadata: Metadata{Name: "test"}}
-	event := newStoreEvent(req, 42, obj)
+	obj := &Unstructured{Metadata: Metadata{Name: "test", ResourceVersion: "42"}}
+	event := newStoreEvent(req, nil, obj)
 	require.Equal(t, WatchAdded, event.Type)
 	require.Equal(t, "42", event.ResourceVersion)
 	require.Equal(t, "widgets", event.Ref.Resource)
@@ -767,8 +768,4 @@ func TestPruneValueWithSchemaAdditionalProperties(t *testing.T) {
 	require.Equal(t, "hello", out["fixed"])
 	require.InEpsilon(t, float64(42), out["extra1"], 0)
 	require.InEpsilon(t, float64(99), out["extra2"], 0)
-}
-
-func timePtr(t time.Time) *time.Time {
-	return &t
 }

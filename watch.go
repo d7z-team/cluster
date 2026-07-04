@@ -46,17 +46,19 @@ func (r *UnstructuredResource) watchLoop(
 			}
 		}
 		lastRV = rv
-		if opts.AllowBookmarks && !sendWatchEvent(ctx, out, UnstructuredWatchEvent{
-			Type:            WatchBookmark,
-			ResourceVersion: formatRV(lastRV),
-		}) {
-			return
+		if opts.AllowBookmarks {
+			if !sendWatchEvent(ctx, out, UnstructuredWatchEvent{
+				Type:            WatchBookmark,
+				ResourceVersion: formatRV(lastRV),
+			}) {
+				return
+			}
 		}
 	}
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	lastBookmark := uint64(0)
+	lastBookmark := lastRV
 	for {
 		latest, ok := r.drainEvents(ctx, opts, scope, &lastRV, out)
 		if !ok {
@@ -119,13 +121,26 @@ func (r *UnstructuredResource) drainEvents(
 			if !watchScopeMatches(opts.Scope, event.Changed) {
 				continue
 			}
-			if event.Object == nil || !matchesSelector(*event.Object, opts.Selector) {
+			oldMatches := event.OldObject != nil && matchesSelector(*event.OldObject, opts.Selector)
+			newMatches := event.Type != WatchDeleted && event.Object != nil && matchesSelector(*event.Object, opts.Selector)
+			if !oldMatches && !newMatches {
 				continue
 			}
+			outType := event.Type
+			outObject := event.Object
+			switch {
+			case !oldMatches && newMatches:
+				outType = WatchAdded
+			case oldMatches && newMatches:
+				outType = WatchModified
+			case oldMatches && !newMatches:
+				outType = WatchDeleted
+				outObject = event.OldObject
+			}
 			if !sendWatchEvent(ctx, out, UnstructuredWatchEvent{
-				Type:            event.Type,
+				Type:            outType,
 				ResourceVersion: event.ResourceVersion,
-				Object:          cloneUnstructuredPtr(event.Object),
+				Object:          cloneUnstructuredPtr(outObject),
 				Annotations:     cloneAnnotations(event.Annotations),
 				Changed:         append([]string(nil), event.Changed...),
 			}) {

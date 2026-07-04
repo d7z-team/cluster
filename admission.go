@@ -138,6 +138,8 @@ func (r *UnstructuredResource) waitAdmission(ctx context.Context, name string) (
 			return nil, ErrAdmissionExpired
 		case AdmissionCanceledPhase:
 			return nil, ErrAdmissionCanceled
+		case AdmissionFailedPhase:
+			return nil, ErrAdmissionFailed
 		}
 		var timeoutCh <-chan time.Time
 		if !spec.ExpiresAt.IsZero() {

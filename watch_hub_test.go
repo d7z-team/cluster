@@ -76,8 +76,16 @@ func TestWatchHubNotifyNonBlocking(t *testing.T) {
 	hub.notify(objectRef{Resource: "widgets", Name: "a"})
 	hub.notify(objectRef{Resource: "widgets", Name: "b"})
 
-	event := drainChannel(t, ch, 100*time.Millisecond)
-	require.Equal(t, 1, event)
+	count := 0
+	for {
+		select {
+		case <-ch:
+			count++
+		case <-time.After(100 * time.Millisecond):
+			require.Equal(t, 1, count)
+			return
+		}
+	}
 }
 
 func TestWatchHubClose(t *testing.T) {
@@ -104,17 +112,4 @@ func TestWatchHubDoubleClose(t *testing.T) {
 func TestWatchKey(t *testing.T) {
 	require.Equal(t, "widgets", watchKey("widgets", ""))
 	require.Equal(t, "widgets\x00ns", watchKey("widgets", "ns"))
-}
-
-func drainChannel(t *testing.T, ch <-chan struct{}, timeout time.Duration) int {
-	t.Helper()
-	count := 0
-	for {
-		select {
-		case <-ch:
-			count++
-		case <-time.After(timeout):
-			return count
-		}
-	}
 }

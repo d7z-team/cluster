@@ -43,6 +43,7 @@ var (
 	ErrAdmissionRejected     = errors.New("cluster: admission rejected")
 	ErrAdmissionExpired      = errors.New("cluster: admission expired")
 	ErrAdmissionCanceled     = errors.New("cluster: admission canceled")
+	ErrAdmissionFailed       = errors.New("cluster: admission failed")
 )
 
 type Options struct {
@@ -326,6 +327,7 @@ const (
 	AdmissionRejectedPhase  AdmissionPhase = "Rejected"
 	AdmissionExpiredPhase   AdmissionPhase = "Expired"
 	AdmissionCanceledPhase  AdmissionPhase = "Canceled"
+	AdmissionFailedPhase    AdmissionPhase = "Failed"
 	AdmissionCommittedPhase AdmissionPhase = "Committed"
 )
 
@@ -360,6 +362,7 @@ type resourceEvent struct {
 	ResourceVersion string         `json:"resourceVersion"`
 	Ref             objectRef      `json:"ref"`
 	Object          *Unstructured  `json:"object,omitempty"`
+	OldObject       *Unstructured  `json:"oldObject,omitempty"`
 	Annotations     Annotations    `json:"annotations,omitempty"`
 	Changed         []string       `json:"changed,omitempty"`
 }

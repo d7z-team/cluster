@@ -492,6 +492,75 @@ func TestClusterAdmissionMetadataSubresource(t *testing.T) {
 	require.Equal(t, "demo", result.obj.Metadata.Labels["app"])
 }
 
+func TestClusterAdmissionFailureReleasesLock(t *testing.T) {
+	c := newURLCluster(t, memoryURLFactory(), nil)
+	ctx := testContext(t, 5*time.Second)
+	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
+		Resource:   "failedadmissionwidgets",
+		APIVersion: "example.test/v1",
+		Kind:       "FailedAdmissionWidget",
+		Admission: []AdmissionRule{
+			{Name: "update-check", Operations: []AdmissionOperation{AdmissionUpdate}},
+		},
+	})
+	require.NoError(t, err)
+
+	created, err := widgets.Create(ctx, "alpha", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{})
+	require.NoError(t, err)
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := widgets.Patch(ctx, created.Metadata.Name, []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
+		resultCh <- err
+	}()
+
+	watchCtx := testContext(t, 5*time.Second)
+	events, err := c.AdmissionRequests().Watch(watchCtx, WatchOptions{SendInitialEvents: true})
+	require.NoError(t, err)
+
+	var request WatchEvent[AdmissionRequestSpec, AdmissionRequestStatus]
+	for {
+		request = nextWatchEvent(t, events)
+		if request.Type == WatchAdded && request.Object != nil && request.Object.Spec.Name == created.Metadata.Name {
+			break
+		}
+	}
+
+	ref := objectRef{Resource: "failedadmissionwidgets", Name: created.Metadata.Name}
+	current, err := c.store.get(ctx, ref)
+	require.NoError(t, err)
+	patched, err := applyObjectPatch(*current, []byte(`{"spec":{"size":"medium"}}`))
+	require.NoError(t, err)
+	updated, err := widgets.raw.prepareSpecUpdate(*current, patched)
+	require.NoError(t, err)
+	_, _, err = c.store.commit(ctx, commitRequest{
+		Op:                commitUpdate,
+		Ref:               ref,
+		ExpectedRV:        parseStoredRV(current.Metadata.ResourceVersion),
+		SkipAdmissionLock: true,
+		Object:            &updated,
+		EventType:         WatchModified,
+		Changed:           changedPaths(current, &updated, SubresourceSpec),
+	})
+	require.NoError(t, err)
+
+	approved, err := c.ApproveAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
+		Rule:    "update-check",
+		Decider: "tester",
+		Message: "apply",
+	})
+	require.NoError(t, err)
+	require.Equal(t, AdmissionFailedPhase, approved.Status.Phase)
+	require.Equal(t, ErrConflict.Error(), approved.Status.LastError)
+
+	err = <-resultCh
+	require.ErrorIs(t, err, ErrAdmissionFailed)
+
+	pending, err := c.store.admissionPending(ctx, ref)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}
+
 func TestClusterAdmissionCanceledAndRequestReadonly(t *testing.T) {
 	c, err := NewClusterFromURL("memory://?node=admission-cancel")
 	require.NoError(t, err)
@@ -955,6 +1024,7 @@ func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
 	require.Equal(t, "alpha", event.Object.Metadata.Name)
 	event = nextWatchEvent(t, initialEvents)
 	require.Equal(t, WatchBookmark, event.Type)
+	requireNoWatchEvent(t, initialEvents, 300*time.Millisecond)
 
 	list, err := widgets.List(ctx, ListOptions{
 		Selector: Where(Annotation("tenant").Eq("t1"), Field("status.phase").Eq("Ready")),
@@ -975,9 +1045,26 @@ func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
 	})
 	require.NoError(t, err)
 	event = nextWatchEvent(t, events)
-	require.Equal(t, WatchModified, event.Type)
+	require.Equal(t, WatchAdded, event.Type)
 	require.Equal(t, "resize", event.Annotations["reason"])
 	require.True(t, slices.Contains(event.Changed, "spec.size"), event.Changed)
+
+	_, err = widgets.Patch(ctx, "alpha", []byte(`{"status":{"phase":"Failed"}}`), PatchOptions{})
+	require.ErrorIs(t, err, ErrInvalidObject)
+
+	statused, err := widgets.UpdateStatus(ctx, "alpha", widgetStatus{Phase: "Failed"}, UpdateOptions{})
+	require.NoError(t, err)
+	event = nextWatchEvent(t, events)
+	require.Equal(t, WatchModified, event.Type)
+	require.Equal(t, statused.Metadata.ResourceVersion, event.ResourceVersion)
+	require.True(t, slices.Contains(event.Changed, "status.phase"), event.Changed)
+
+	updated, err := widgets.Patch(ctx, "alpha", []byte(`{"spec":{"size":"small"}}`), PatchOptions{})
+	require.NoError(t, err)
+	event = nextWatchEvent(t, events)
+	require.Equal(t, WatchDeleted, event.Type)
+	require.Equal(t, updated.Metadata.ResourceVersion, event.ResourceVersion)
+	require.Equal(t, "alpha", event.Object.Metadata.Name)
 }
 
 func TestClusterWatchMetadataAndStatusScopes(t *testing.T) {

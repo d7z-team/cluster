@@ -665,17 +665,19 @@ func cloneEvent(event resourceEvent) resourceEvent {
 		ResourceVersion: event.ResourceVersion,
 		Ref:             event.Ref,
 		Object:          cloneUnstructuredPtr(event.Object),
+		OldObject:       cloneUnstructuredPtr(event.OldObject),
 		Annotations:     cloneAnnotations(event.Annotations),
 		Changed:         append([]string(nil), event.Changed...),
 	}
 }
 
-func newStoreEvent(req commitRequest, rv uint64, obj *Unstructured) resourceEvent {
+func newStoreEvent(req commitRequest, oldObj, newObj *Unstructured) resourceEvent {
 	return resourceEvent{
 		Type:            req.EventType,
-		ResourceVersion: formatRV(rv),
+		ResourceVersion: newObj.Metadata.ResourceVersion,
 		Ref:             req.Ref,
-		Object:          cloneUnstructuredPtr(obj),
+		Object:          cloneUnstructuredPtr(newObj),
+		OldObject:       cloneUnstructuredPtr(oldObj),
 		Annotations:     cloneAnnotations(req.EventAnnotations),
 		Changed:         append([]string(nil), req.Changed...),
 	}

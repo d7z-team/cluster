@@ -225,6 +225,7 @@ _ = rawWidgets
 - 原始写入方会同步等待 request 终态。
 - 所有规则都 approve 后才会真正提交目标资源。
 - 任一规则 reject 后写入失败，目标资源不会产生提交事件。
+- 如果 approve 时发现目标对象前置条件已经失效，request 会进入 `Failed`，锁会立即释放。
 - request 终态会保留一段时间，再按数量和最小保留时间清理。
 
 终态：
@@ -234,15 +235,20 @@ _ = rawWidgets
 - `Rejected`
 - `Expired`
 - `Canceled`
+- `Failed`
 
 ## Watch 规则
 
 - `Watch` 返回对象整体变化，包括 spec、metadata、status、删除态变化。
 - `WatchMetadata` 只返回 metadata 变化。
 - `WatchStatus` 只返回 status 变化。
+- selector watch 返回的是“过滤后视图”的事件流：
+  - 对象从不匹配变为匹配时返回 `ADDED`
+  - 对象持续匹配时返回 `MODIFIED`
+  - 对象从匹配变为不匹配或被删除时返回 `DELETED`
 - `Since` 太旧时返回 `ErrResourceVersionTooOld`。
 - `SendInitialEvents=true` 会先发当前对象的 synthetic `ADDED`，然后发 `BOOKMARK`。
-- `AllowBookmarks=true` 允许返回 bookmark 事件。
+- `AllowBookmarks=true` 允许返回 bookmark 事件；同一 `resourceVersion` 不会重复发送 bookmark。
 
 ## 当前未支持范围
 
@@ -476,6 +482,11 @@ for event := range requests {
 	}
 }
 ```
+
+说明：
+
+- `ApproveAdmission` / `RejectAdmission` 返回的是 request 最新状态。
+- `ApproveAdmission` 返回成功不等于目标对象一定已提交；若提交前置条件失效，request 会进入 `Failed`。
 
 相关接口：
 
