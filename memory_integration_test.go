@@ -278,162 +278,19 @@ func TestClusterSchemaPrunesUnknownFields(t *testing.T) {
 }
 
 func TestClusterAdmissionCreateFlow(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	ctx := testContext(t, 5*time.Second)
-	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
-		Resource:   "admissionwidgets",
-		APIVersion: "example.test/v1",
-		Kind:       "AdmissionWidget",
-		Admission: []AdmissionRule{
-			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
-		},
-	})
-	require.NoError(t, err)
-
-	type createResult struct {
-		obj *Object[widgetSpec, widgetStatus]
-		err error
-	}
-	resultCh := make(chan createResult, 1)
-	go func() {
-		obj, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-		resultCh <- createResult{obj: obj, err: err}
-	}()
-
-	watchCtx := testContext(t, 5*time.Second)
-	events, err := c.AdmissionRequests().Watch(watchCtx, WatchOptions{SendInitialEvents: true})
-	require.NoError(t, err)
-
-	var request WatchEvent[AdmissionRequestSpec, AdmissionRequestStatus]
-	for {
-		request = nextWatchEvent(t, events)
-		if request.Type == WatchAdded && request.Object != nil && request.Object.Spec.Name == "alpha" {
-			break
-		}
-	}
-	require.Equal(t, AdmissionPendingPhase, request.Object.Status.Phase)
-	require.Equal(t, []string{"create-check"}, request.Object.Spec.Rules)
-
-	_, err = widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-b"}, CreateOptions{})
-	require.ErrorIs(t, err, ErrAdmissionPending)
-
-	approved, err := c.ApproveAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
-		Rule:    "create-check",
-		Decider: "tester",
-		Message: "ok",
-	})
-	require.NoError(t, err)
-	require.Equal(t, AdmissionCommittedPhase, approved.Status.Phase)
-	require.NotNil(t, approved.Status.TargetObject)
-
-	result := <-resultCh
-	require.NoError(t, result.err)
-	require.NotNil(t, result.obj)
-	require.Equal(t, "alpha", result.obj.Metadata.Name)
-	require.Equal(t, "medium", result.obj.Spec.Size)
-	require.Equal(t, "team-a", result.obj.Spec.Owner)
+	assertBackendAdmissionCreateFlow(t, memoryURLFactory())
 }
 
 func TestClusterAdmissionRejectFlow(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	ctx := testContext(t, 5*time.Second)
-	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
-		Resource:   "rejectwidgets",
-		APIVersion: "example.test/v1",
-		Kind:       "RejectWidget",
-		Admission: []AdmissionRule{
-			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
-		},
-	})
-	require.NoError(t, err)
-
-	type createResult struct {
-		obj *Object[widgetSpec, widgetStatus]
-		err error
-	}
-	resultCh := make(chan createResult, 1)
-	go func() {
-		obj, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-		resultCh <- createResult{obj: obj, err: err}
-	}()
-
-	watchCtx := testContext(t, 5*time.Second)
-	events, err := c.AdmissionRequests().Watch(watchCtx, WatchOptions{SendInitialEvents: true})
-	require.NoError(t, err)
-
-	var request WatchEvent[AdmissionRequestSpec, AdmissionRequestStatus]
-	for {
-		request = nextWatchEvent(t, events)
-		if request.Type == WatchAdded && request.Object != nil && request.Object.Spec.Name == "alpha" {
-			break
-		}
-	}
-	require.Equal(t, AdmissionPendingPhase, request.Object.Status.Phase)
-
-	rejected, err := c.RejectAdmission(ctx, request.Object.Metadata.Name, AdmissionDecisionOptions{
-		Rule:    "create-check",
-		Decider: "tester",
-		Message: "denied",
-	})
-	require.NoError(t, err)
-	require.Equal(t, AdmissionRejectedPhase, rejected.Status.Phase)
-	require.Equal(t, "create-check", rejected.Status.RejectedRule)
-	require.Equal(t, "denied", rejected.Status.Message)
-
-	result := <-resultCh
-	require.ErrorIs(t, result.err, ErrAdmissionRejected)
-	require.Nil(t, result.obj)
+	assertBackendAdmissionRejectFlow(t, memoryURLFactory())
 }
 
 func TestClusterAdmissionExpires(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), url.Values{
-		"admission_timeout":      {"80ms"},
-		"event_cleanup_interval": {"20ms"},
-	})
-	widgets, err := Define(c, TypedResourceDef[widgetSpec, widgetStatus]{
-		Resource:   "expirewidgets",
-		APIVersion: "example.test/v1",
-		Kind:       "ExpireWidget",
-		Admission: []AdmissionRule{
-			{Name: "create-check", Operations: []AdmissionOperation{AdmissionCreate}},
-		},
-	})
-	require.NoError(t, err)
-
-	ctx := testContext(t, 5*time.Second)
-	resultCh := make(chan error, 1)
-	go func() {
-		_, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-		resultCh <- err
-	}()
-
-	var errResult error
-	require.Eventually(t, func() bool {
-		select {
-		case errResult = <-resultCh:
-			return true
-		default:
-			return false
-		}
-	}, 2*time.Second, 20*time.Millisecond)
-	require.ErrorIs(t, errResult, ErrAdmissionExpired)
-
-	list, err := c.AdmissionRequests().List(ctx, ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, list.Items, 1)
-	require.Equal(t, AdmissionExpiredPhase, list.Items[0].Status.Phase)
+	assertBackendAdmissionExpires(t, memoryURLFactory())
 }
 
 func TestClusterMetadataPatchRejectsManagedKeys(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	widgets := defineWidgets(t, c, "metapatchrejectwidgets")
-	ctx := testContext(t, 5*time.Second)
-
-	_, err := widgets.Create(ctx, "alpha", widgetSpec{Owner: "team-a"}, CreateOptions{})
-	require.NoError(t, err)
-
-	_, err = widgets.PatchMetadata(ctx, "alpha", []byte(`{"uid":"override"}`), PatchOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
+	assertBackendMetadataPatchRejectsManagedKeys(t, memoryURLFactory())
 }
 
 func TestClusterAdmissionMetadataSubresource(t *testing.T) {
@@ -677,13 +534,13 @@ func TestUnstructuredWatchMetadata(t *testing.T) {
 	watchCtx := testContext(t, 3*time.Second)
 	metaEvents, err := raw.WatchMetadata(watchCtx, WatchOptions{
 		ResourceVersion: list.ResourceVersion,
-		Name:  "alpha",
+		Name:            "alpha",
 	})
 	require.NoError(t, err)
 
 	statusEvents, err := raw.WatchStatus(watchCtx, WatchOptions{
 		ResourceVersion: list.ResourceVersion,
-		Name:  "alpha",
+		Name:            "alpha",
 	})
 	require.NoError(t, err)
 
@@ -744,63 +601,7 @@ func TestOptionsNegativeValidation(t *testing.T) {
 }
 
 func TestClusterCRUDAndStatus(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	widgets := defineWidgets(t, c, "widgets")
-	ctx := testContext(t, 5*time.Second)
-
-	created, err := widgets.Create(ctx, "alpha", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{
-		Labels:      Labels{"app": "demo"},
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, created.Metadata.ResourceVersion)
-	require.EqualValues(t, 1, created.Metadata.Generation)
-	require.NotEmpty(t, created.Metadata.UID)
-	got, err := widgets.Get(ctx, "alpha")
-	require.NoError(t, err)
-	require.Equal(t, created.Metadata.UID, got.Metadata.UID)
-
-	stale := *got
-	patched, err := widgets.Patch(ctx, "alpha", []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
-	require.NoError(t, err)
-	require.NotEqual(t, created.Metadata.ResourceVersion, patched.Metadata.ResourceVersion)
-	require.EqualValues(t, 2, patched.Metadata.Generation)
-
-	stale.Spec.Size = "medium"
-	_, err = widgets.Update(ctx, &stale, UpdateOptions{})
-	require.ErrorIs(t, err, ErrConflict)
-
-	statused, err := widgets.UpdateStatus(ctx, "alpha", widgetStatus{Phase: "Ready"}, UpdateOptions{})
-	require.NoError(t, err)
-	require.NotEqual(t, patched.Metadata.ResourceVersion, statused.Metadata.ResourceVersion)
-	require.EqualValues(t, 2, statused.Metadata.Generation)
-
-	statused.Status.Phase = "Failed"
-	_, err = widgets.Update(ctx, statused, UpdateOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
-
-	list, err := widgets.List(ctx, ListOptions{
-		Selector: Where(Label("app").Eq("demo"), Annotation("tenant").Eq("t1"), Field("status.phase").Eq("Ready")),
-	})
-	require.NoError(t, err)
-	require.Len(t, list.Items, 1)
-
-	withFinalizer, err := widgets.PatchMetadata(ctx, "alpha", []byte(`{"finalizers":["cleanup.example.test"]}`), PatchOptions{})
-	require.NoError(t, err)
-	require.NotEmpty(t, withFinalizer.Metadata.Finalizers)
-
-	deleting, err := widgets.Delete(ctx, "alpha", DeleteOptions{})
-	require.NoError(t, err)
-	require.NotNil(t, deleting.Metadata.DeletionTimestamp)
-	_, err = widgets.Get(ctx, "alpha")
-	require.NoError(t, err)
-
-	_, err = widgets.PatchMetadata(ctx, "alpha", []byte(`{"finalizers":[]}`), PatchOptions{})
-	require.NoError(t, err)
-	_, err = widgets.Delete(ctx, "alpha", DeleteOptions{})
-	require.NoError(t, err)
-	_, err = widgets.Get(ctx, "alpha")
-	require.ErrorIs(t, err, ErrNotFound)
+	assertBackendCRUDAndStatus(t, memoryURLFactory())
 }
 
 func TestClusterSchemaAndTags(t *testing.T) {
@@ -884,114 +685,7 @@ func TestClusterListPaginationAndSelectors(t *testing.T) {
 }
 
 func TestClusterNamespacedResources(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	widgets := defineNamespacedWidgets(t, c, "namespacedwidgets")
-	ctx := testContext(t, 6*time.Second)
-
-	_, err := widgets.Create(ctx, "same", widgetSpec{Size: "small"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.ErrorIs(t, err, ErrInvalidObject)
-	_, err = widgets.Get(ctx, "same")
-	require.ErrorIs(t, err, ErrInvalidObject)
-	_, err = c.Nodes().Namespace("team-a")
-	require.ErrorIs(t, err, ErrInvalidObject)
-	_, err = widgets.Namespace("../escape")
-	require.ErrorIs(t, err, ErrInvalidObject)
-
-	teamA, err := widgets.Namespace("team-a")
-	require.NoError(t, err)
-	teamB, err := widgets.Namespace("team-b")
-	require.NoError(t, err)
-	all, err := widgets.AllNamespaces()
-	require.NoError(t, err)
-
-	createdA, err := teamA.Create(ctx, "same", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, "team-a", createdA.Metadata.Namespace)
-	createdB, err := teamB.Create(ctx, "same", widgetSpec{Size: "medium", Owner: "team-b"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t2"},
-	})
-	require.NoError(t, err)
-	require.Equal(t, "team-b", createdB.Metadata.Namespace)
-
-	gotA, err := teamA.Get(ctx, "same")
-	require.NoError(t, err)
-	require.Equal(t, createdA.Metadata.UID, gotA.Metadata.UID)
-	gotB, err := teamB.Get(ctx, "same")
-	require.NoError(t, err)
-	require.Equal(t, createdB.Metadata.UID, gotB.Metadata.UID)
-
-	listA, err := teamA.List(ctx, ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, listA.Items, 1)
-	require.Equal(t, "team-a", listA.Items[0].Metadata.Namespace)
-	listAll, err := all.List(ctx, ListOptions{})
-	require.NoError(t, err)
-	require.Len(t, listAll.Items, 2)
-	listBase, err := widgets.List(ctx, ListOptions{
-		Selector: Where(Field("metadata.namespace").Eq("team-b")),
-	})
-	require.NoError(t, err)
-	require.Len(t, listBase.Items, 1)
-	require.Equal(t, createdB.Metadata.UID, listBase.Items[0].Metadata.UID)
-	rawWidgets, err := c.Unstructured("namespacedwidgets")
-	require.NoError(t, err)
-	_, err = rawWidgets.Get(ctx, "same")
-	require.ErrorIs(t, err, ErrInvalidObject)
-	rawTeamB, err := rawWidgets.Namespace("team-b")
-	require.NoError(t, err)
-	rawB, err := rawTeamB.Get(ctx, "same")
-	require.NoError(t, err)
-	require.Equal(t, createdB.Metadata.UID, rawB.Metadata.UID)
-
-	_, err = all.Patch(ctx, "same", []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
-	_, err = teamA.Patch(ctx, "same", []byte(`{"metadata":{"namespace":"team-b"}}`), PatchOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
-	wrongNamespace := *createdA
-	wrongNamespace.Metadata.Namespace = "team-b"
-	_, err = teamA.Update(ctx, &wrongNamespace, UpdateOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
-
-	watchCtx := testContext(t, 5*time.Second)
-	teamAEvents, err := teamA.Watch(watchCtx, WatchOptions{ResourceVersion: listAll.ResourceVersion})
-	require.NoError(t, err)
-	allEvents, err := all.Watch(watchCtx, WatchOptions{ResourceVersion: listAll.ResourceVersion})
-	require.NoError(t, err)
-
-	patchedB, err := teamB.Patch(ctx, "same", []byte(`{"spec":{"size":"large"}}`), PatchOptions{})
-	require.NoError(t, err)
-	event := nextWatchEvent(t, allEvents)
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, patchedB.Metadata.ResourceVersion, event.ResourceVersion)
-	require.Equal(t, "team-b", event.Object.Metadata.Namespace)
-	requireNoWatchEvent(t, teamAEvents, 300*time.Millisecond)
-
-	patchedA, err := teamA.Patch(ctx, "same", []byte(`{"spec":{"size":"medium"}}`), PatchOptions{})
-	require.NoError(t, err)
-	event = nextWatchEvent(t, teamAEvents)
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, patchedA.Metadata.ResourceVersion, event.ResourceVersion)
-	require.Equal(t, "team-a", event.Object.Metadata.Namespace)
-	event = nextWatchEvent(t, allEvents)
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, patchedA.Metadata.ResourceVersion, event.ResourceVersion)
-	require.Equal(t, "team-a", event.Object.Metadata.Namespace)
-
-	_, err = teamA.Delete(ctx, "same", DeleteOptions{})
-	require.NoError(t, err)
-	_, err = teamA.Get(ctx, "same")
-	require.ErrorIs(t, err, ErrNotFound)
-	gotB, err = teamB.Get(ctx, "same")
-	require.NoError(t, err)
-	require.Equal(t, createdB.Metadata.UID, gotB.Metadata.UID)
-
-	info, err := c.Resource("namespacedwidgets")
-	require.NoError(t, err)
-	require.True(t, info.Namespaced)
+	assertBackendNamespacedResources(t, memoryURLFactory())
 }
 
 func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
@@ -1034,9 +728,9 @@ func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
 
 	watchCtx := testContext(t, 3*time.Second)
 	events, err := widgets.Watch(watchCtx, WatchOptions{
-		ResourceVersion:    list.ResourceVersion,
-		Name:     "alpha",
-		Selector: Where(Annotation("tenant").Eq("t1"), Field("spec.size").Eq("large")),
+		ResourceVersion: list.ResourceVersion,
+		Name:            "alpha",
+		Selector:        Where(Annotation("tenant").Eq("t1"), Field("spec.size").Eq("large")),
 	})
 	require.NoError(t, err)
 
@@ -1068,70 +762,7 @@ func TestClusterWatchSelectorsAndChangedPaths(t *testing.T) {
 }
 
 func TestClusterWatchMetadataAndStatusScopes(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	widgets := defineWidgets(t, c, "scopedwidgets")
-	ctx := testContext(t, 5*time.Second)
-
-	_, err := widgets.Create(ctx, "alpha", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{
-		Labels:      Labels{"app": "demo"},
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-
-	list, err := widgets.List(ctx, ListOptions{Selector: Where(Field("metadata.name").Eq("alpha"))})
-	require.NoError(t, err)
-	require.Len(t, list.Items, 1)
-
-	watchCtx := testContext(t, 4*time.Second)
-	metadataEvents, err := widgets.WatchMetadata(watchCtx, WatchOptions{
-		ResourceVersion: list.ResourceVersion,
-		Name:  "alpha",
-	})
-	require.NoError(t, err)
-	statusEvents, err := widgets.WatchStatus(watchCtx, WatchOptions{
-		ResourceVersion: list.ResourceVersion,
-		Name:  "alpha",
-	})
-	require.NoError(t, err)
-
-	_, err = widgets.Patch(ctx, "alpha", []byte(`{"spec":{"size":"medium"}}`), PatchOptions{})
-	require.NoError(t, err)
-	patched, err := widgets.PatchMetadata(ctx, "alpha", []byte(`{"labels":{"app":"demo","tier":"frontend"}}`), PatchOptions{})
-	require.NoError(t, err)
-	require.EqualValues(t, 2, patched.Metadata.Generation)
-
-	event := nextWatchEvent(t, metadataEvents)
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, patched.Metadata.ResourceVersion, event.ResourceVersion)
-	require.True(t, slices.Contains(event.Changed, "metadata.labels"), event.Changed)
-
-	statused, err := widgets.UpdateStatus(ctx, "alpha", widgetStatus{Phase: "Ready"}, UpdateOptions{})
-	require.NoError(t, err)
-
-	event = nextWatchEvent(t, statusEvents)
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, statused.Metadata.ResourceVersion, event.ResourceVersion)
-	require.True(t, slices.Contains(event.Changed, "status.phase"), event.Changed)
-	select {
-	case event, ok := <-metadataEvents:
-		require.True(t, ok, "watch channel closed")
-		t.Fatalf("unexpected metadata watch event: %#v", event)
-	case <-time.After(300 * time.Millisecond):
-	}
-
-	initialCtx := testContext(t, 3*time.Second)
-	initialEvents, err := widgets.WatchStatus(initialCtx, WatchOptions{
-		Name:              "alpha",
-		SendInitialEvents: true,
-	})
-	require.NoError(t, err)
-	event = nextWatchEvent(t, initialEvents)
-	require.Equal(t, WatchAdded, event.Type)
-	require.Equal(t, "alpha", event.Object.Metadata.Name)
-	require.Empty(t, event.Changed)
-
-	_, err = widgets.Watch(ctx, WatchOptions{Scope: WatchScope("invalid")})
-	require.ErrorIs(t, err, ErrInvalidObject)
+	assertBackendWatchMetadataAndStatusScopes(t, memoryURLFactory())
 }
 
 func TestClusterMasterAPIHistoryAndWatch(t *testing.T) {
@@ -1205,7 +836,7 @@ func TestClusterNodeAPIAndResourceSchema(t *testing.T) {
 	watchCtx := testContext(t, 4*time.Second)
 	metadataEvents, err := nodes.WatchMetadata(watchCtx, WatchOptions{
 		ResourceVersion: list.ResourceVersion,
-		Name:  c.options.NodeName,
+		Name:            c.options.NodeName,
 	})
 	require.NoError(t, err)
 
@@ -1289,92 +920,11 @@ func TestClusterNodeAPIAndResourceSchema(t *testing.T) {
 }
 
 func TestClusterWatchReplayAndRetention(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), url.Values{
-		"event_retention_count":  {"2"},
-		"event_cleanup_interval": {"20ms"},
-		"watch_buffer_size":      {"4"},
-	})
-	widgets := defineWidgets(t, c, "retentionwidgets")
-	ctx := testContext(t, 5*time.Second)
-
-	_, err := widgets.Create(ctx, "one", widgetSpec{Size: "small"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-	list, err := widgets.List(ctx, ListOptions{})
-	require.NoError(t, err)
-
-	watchCtx := testContext(t, 3*time.Second)
-	events, err := widgets.Watch(watchCtx, WatchOptions{ResourceVersion: list.ResourceVersion})
-	require.NoError(t, err)
-
-	created, err := widgets.Create(ctx, "two", widgetSpec{Size: "small"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-	event := nextWatchEvent(t, events)
-	require.Equal(t, WatchAdded, event.Type)
-	require.Equal(t, created.Metadata.ResourceVersion, event.ResourceVersion)
-	require.Equal(t, "two", event.Object.Metadata.Name)
-
-	_, err = widgets.Patch(ctx, "two", []byte(`{"spec":{"size":"medium"}}`), PatchOptions{})
-	require.NoError(t, err)
-	event = nextWatchEvent(t, events)
-	require.Equal(t, WatchModified, event.Type)
-
-	_, err = widgets.Delete(ctx, "two", DeleteOptions{})
-	require.NoError(t, err)
-	event = nextWatchEvent(t, events)
-	require.Equal(t, WatchDeleted, event.Type)
-
-	waitForWatchError(t, 3*time.Second, func(ctx context.Context) (<-chan WatchEvent[widgetSpec, widgetStatus], error) {
-		return widgets.Watch(ctx, WatchOptions{ResourceVersion: "1"})
-	}, ErrResourceVersionTooOld)
+	assertBackendWatchReplayAndRetention(t, memoryURLFactory())
 }
 
 func TestClusterUnstructuredHandle(t *testing.T) {
-	c := newURLCluster(t, memoryURLFactory(), nil)
-	widgets := defineWidgets(t, c, "rawwidgets")
-	ctx := testContext(t, 5*time.Second)
-
-	created, err := widgets.Create(ctx, "alpha", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{
-		Annotations: Annotations{"tenant": "t1"},
-	})
-	require.NoError(t, err)
-	raw, err := c.Unstructured("rawwidgets")
-	require.NoError(t, err)
-	got, err := raw.Get(ctx, "alpha")
-	require.NoError(t, err)
-	require.Equal(t, created.Metadata.UID, got.Metadata.UID)
-	require.JSONEq(t, `{"size":"small","owner":"team-a"}`, string(got.Spec))
-
-	list, err := raw.List(ctx, ListOptions{Selector: Where(Field("metadata.name").Eq(created.Metadata.Name))})
-	require.NoError(t, err)
-	require.Len(t, list.Items, 1)
-
-	watchCtx := testContext(t, 3*time.Second)
-	statusEvents, err := raw.WatchStatus(watchCtx, WatchOptions{
-		ResourceVersion: list.ResourceVersion,
-		Name:  "alpha",
-	})
-	require.NoError(t, err)
-	statused, err := raw.PatchStatus(ctx, "alpha", []byte(`{"phase":"Ready"}`), PatchOptions{})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"phase":"Ready"}`, string(statused.Status))
-	var event UnstructuredWatchEvent
-	select {
-	case got, ok := <-statusEvents:
-		require.True(t, ok)
-		event = got
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for unstructured watch event")
-	}
-	require.Equal(t, WatchModified, event.Type)
-	require.Equal(t, statused.Metadata.ResourceVersion, event.ResourceVersion)
-	require.True(t, slices.Contains(event.Changed, "status.phase"), event.Changed)
-
-	_, err = raw.Patch(ctx, "alpha", []byte(`{"status":{"phase":"Failed"}}`), PatchOptions{})
-	require.ErrorIs(t, err, ErrInvalidObject)
+	assertBackendUnstructuredHandle(t, memoryURLFactory())
 }
 
 func TestClusterDefaultsDoNotBreakIdentityOrStatusIsolation(t *testing.T) {

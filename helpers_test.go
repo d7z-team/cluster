@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -149,6 +150,29 @@ func TestValidateMetadataWithSchema(t *testing.T) {
 	require.Error(t, validateMetadataWithSchema(Metadata{Name: "test", Annotations: Annotations{"k\x00ey": "val"}}))
 }
 
+func TestValidateOwnerReferencesForDefinition(t *testing.T) {
+	namespacedDef := &resourceDefinition{Namespaced: true}
+	clusterDef := &resourceDefinition{Namespaced: false}
+	meta := Metadata{
+		Namespace: "team-a",
+		Name:      "child",
+		OwnerReferences: []OwnerReference{{
+			Resource:  "widgets",
+			Namespace: "team-a",
+			Name:      "parent",
+			UID:       "uid-1",
+		}},
+	}
+
+	require.NoError(t, validateOwnerReferencesForDefinition(namespacedDef, meta))
+
+	meta.OwnerReferences[0].Namespace = "team-b"
+	require.ErrorIs(t, validateOwnerReferencesForDefinition(namespacedDef, meta), ErrInvalidObject)
+
+	meta.OwnerReferences[0].Namespace = "team-a"
+	require.ErrorIs(t, validateOwnerReferencesForDefinition(clusterDef, meta), ErrInvalidObject)
+}
+
 func TestValidateMetadataPatchWithSchema(t *testing.T) {
 	writable := map[string]struct{}{
 		"labels":      {},
@@ -229,6 +253,13 @@ func TestUpdateRV(t *testing.T) {
 
 	_, err = updateRV("", "")
 	require.ErrorIs(t, err, ErrConflict)
+}
+
+func TestValidateResourceVersionMatch(t *testing.T) {
+	require.NoError(t, validateResourceVersionMatch(5, 5, ResourceVersionExact))
+	require.ErrorIs(t, validateResourceVersionMatch(5, 4, ResourceVersionExact), ErrResourceVersionTooOld)
+	require.ErrorIs(t, validateResourceVersionMatch(5, 6, ResourceVersionAny), ErrConflict)
+	require.ErrorIs(t, validateResourceVersionMatch(5, 1, ResourceVersionMatch("broken")), ErrInvalidObject)
 }
 
 func TestFormatRV(t *testing.T) {
@@ -325,6 +356,36 @@ func TestJSONEqual(t *testing.T) {
 
 func TestLockKeyFromRef(t *testing.T) {
 	require.Equal(t, "res\x00ns\x00name", lockKeyFromRef(objectRef{Resource: "res", Namespace: "ns", Name: "name"}))
+}
+
+func TestContinueTokenRoundTrip(t *testing.T) {
+	token := continueToken{
+		Resource:        "widgets",
+		Namespace:       "team-a",
+		AllNamespaces:   true,
+		ResourceVersion: "42",
+		SelectorHash:    "selector",
+		LastCursor:      "cursor",
+	}
+
+	encoded, err := encodeContinueToken(token)
+	require.NoError(t, err)
+
+	decoded, err := decodeContinueToken(encoded)
+	require.NoError(t, err)
+	require.Equal(t, token, decoded)
+
+	decoded, err = decodeContinueToken("   ")
+	require.NoError(t, err)
+	require.Equal(t, continueToken{}, decoded)
+}
+
+func TestDecodeContinueTokenInvalid(t *testing.T) {
+	_, err := decodeContinueToken("@@@")
+	require.ErrorIs(t, err, ErrInvalidObject)
+
+	_, err = decodeContinueToken("eyJyZXNvdXJjZSI6")
+	require.True(t, errors.Is(err, ErrInvalidObject))
 }
 
 func TestNormalizeStorePrefix(t *testing.T) {

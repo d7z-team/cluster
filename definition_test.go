@@ -275,7 +275,7 @@ func TestParseSchemaClusterTag(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestJsonFieldName(t *testing.T) {
+func TestJSONFieldName(t *testing.T) {
 	type testStruct struct {
 		Normal string `json:"normal"`
 		Omit   string `json:"omit,omitempty"`
@@ -301,13 +301,13 @@ func TestJsonFieldName(t *testing.T) {
 }
 
 func TestCompileSchema(t *testing.T) {
-	_, _, _, _, _, _, _, _, _, _, err := compileSchema(nil)
+	_, err := compileSchema(nil)
 	require.ErrorIs(t, err, ErrInvalidResource)
 
-	_, _, _, _, _, _, _, _, _, _, err = compileSchema(json.RawMessage(`{"type":"string"}`))
+	_, err = compileSchema(json.RawMessage(`{"type":"string"}`))
 	require.ErrorIs(t, err, ErrInvalidResource)
 
-	raw, indexes, _, _, _, defaults, _, _, _, _, err := compileSchema(json.RawMessage(`{
+	compiled, err := compileSchema(json.RawMessage(`{
 		"type":"object",
 		"properties":{
 			"apiVersion":{"type":"string"},
@@ -317,7 +317,7 @@ func TestCompileSchema(t *testing.T) {
 		}
 	}`))
 	require.NoError(t, err)
-	require.NotEmpty(t, raw)
-	require.Empty(t, indexes)
-	require.Empty(t, defaults)
+	require.NotEmpty(t, compiled.Raw)
+	require.Empty(t, compiled.Indexes)
+	require.Empty(t, compiled.Defaults)
 }

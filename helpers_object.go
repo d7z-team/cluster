@@ -3,239 +3,14 @@ package cluster
 import (
 	"bytes"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
-
-type continueToken struct {
-	Resource        string `json:"resource"`
-	Namespace       string `json:"namespace,omitempty"`
-	AllNamespaces   bool   `json:"allNamespaces,omitempty"`
-	ResourceVersion string `json:"resourceVersion"`
-	SelectorHash    string `json:"selectorHash"`
-	LastCursor      string `json:"lastCursor"`
-}
-
-func validateResourceName(name string) error {
-	if invalidPathToken(name) {
-		return fmt.Errorf("%w: invalid resource", ErrInvalidResource)
-	}
-	return nil
-}
-
-func validateObjectName(name string) error {
-	if invalidPathToken(name) {
-		return fmt.Errorf("%w: invalid name", ErrInvalidObject)
-	}
-	return nil
-}
-
-func validateNamespace(namespace string) error {
-	if invalidPathToken(namespace) {
-		return fmt.Errorf("%w: invalid namespace", ErrInvalidObject)
-	}
-	return nil
-}
-
-func invalidPathToken(value string) bool {
-	value = strings.TrimSpace(value)
-	return value == "" || value == "." || value == ".." || strings.ContainsAny(value, `/\`)
-}
-
-func validateMetadataWithSchema(meta Metadata) error {
-	if meta.Namespace != "" {
-		if err := validateNamespace(meta.Namespace); err != nil {
-			return err
-		}
-	}
-	if meta.Name != "" {
-		if err := validateObjectName(meta.Name); err != nil {
-			return err
-		}
-	}
-	if err := validateMetadataKeys(meta.Labels); err != nil {
-		return err
-	}
-	if err := validateMetadataKeys(meta.Annotations); err != nil {
-		return err
-	}
-	controllerOwners := 0
-	for _, owner := range meta.OwnerReferences {
-		if err := validateObjectName(owner.Name); err != nil {
-			return err
-		}
-		if owner.Namespace != "" {
-			if err := validateNamespace(owner.Namespace); err != nil {
-				return err
-			}
-		}
-		if invalidPathToken(owner.Resource) || strings.TrimSpace(owner.UID) == "" {
-			return fmt.Errorf("%w: invalid owner reference", ErrInvalidObject)
-		}
-		if owner.Controller {
-			controllerOwners++
-			if controllerOwners > 1 {
-				return fmt.Errorf("%w: only one controller owner reference is allowed", ErrInvalidObject)
-			}
-		}
-	}
-	return nil
-}
-
-func validateOwnerReferencesForDefinition(def *resourceDefinition, meta Metadata) error {
-	if err := validateMetadataWithSchema(meta); err != nil {
-		return err
-	}
-	for _, owner := range meta.OwnerReferences {
-		switch {
-		case def == nil:
-			continue
-		case def.Namespaced:
-			if owner.Namespace != meta.Namespace {
-				return fmt.Errorf("%w: ownerReferences must stay in the same namespace", ErrInvalidObject)
-			}
-		default:
-			if owner.Namespace != "" {
-				return fmt.Errorf("%w: cluster-scoped resources cannot reference namespaced owners", ErrInvalidObject)
-			}
-		}
-	}
-	return nil
-}
-
-func validateMetadataKeys(values map[string]string) error {
-	for key := range values {
-		if strings.TrimSpace(key) == "" || strings.Contains(key, "\x00") {
-			return fmt.Errorf("%w: invalid metadata key", ErrInvalidObject)
-		}
-	}
-	return nil
-}
-
-func validateSpecPatch(patch []byte, writable map[string]struct{}) error {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(patch, &root); err != nil {
-		return err
-	}
-	if _, ok := root["status"]; ok {
-		return fmt.Errorf("%w: status must be patched through status subresource", ErrInvalidObject)
-	}
-	if raw, ok := root["metadata"]; ok {
-		if err := validateMetadataPatchWithSchema(raw, writable); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateMetadataPatchWithSchema(patch []byte, writable map[string]struct{}) error {
-	var meta map[string]json.RawMessage
-	if err := json.Unmarshal(patch, &meta); err != nil {
-		return err
-	}
-	if len(meta) == 0 {
-		return ErrInvalidObject
-	}
-	for key := range meta {
-		if _, ok := writable[key]; !ok {
-			return fmt.Errorf("%w: metadata.%s is managed", ErrInvalidObject, key)
-		}
-	}
-	return nil
-}
-
-func validateRawObjectJSON(obj *Unstructured) error {
-	if err := validateRawJSONField("spec", obj.Spec); err != nil {
-		return err
-	}
-	return validateRawJSONField("status", obj.Status)
-}
-
-func validateRawJSONField(name string, raw json.RawMessage) error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return nil
-	}
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return fmt.Errorf("%w: invalid %s JSON: %v", ErrInvalidObject, name, err)
-	}
-	return nil
-}
-
-func updateRV(primary, fallback string) (uint64, error) {
-	if primary == "" {
-		primary = fallback
-	}
-	return parseRequiredRV(primary)
-}
-
-func parseRequiredRV(value string) (uint64, error) {
-	rv, err := parseOptionalRV(value)
-	if err != nil {
-		return 0, err
-	}
-	if rv == 0 {
-		return 0, ErrConflict
-	}
-	return rv, nil
-}
-
-func parseOptionalRV(value string) (uint64, error) {
-	if value == "" {
-		return 0, nil
-	}
-	rv, err := strconv.ParseUint(value, 10, 64)
-	if err != nil || rv == 0 {
-		return 0, fmt.Errorf("%w: invalid resourceVersion", ErrInvalidObject)
-	}
-	return rv, nil
-}
-
-func parseStoredRV(value string) uint64 {
-	rv, _ := strconv.ParseUint(value, 10, 64)
-	return rv
-}
-
-func validateResourceVersionMatch(currentRV, requestedRV uint64, match ResourceVersionMatch) error {
-	switch match {
-	case ResourceVersionAny, ResourceVersionNotOlderThan:
-		if requestedRV > currentRV {
-			return ErrConflict
-		}
-		return nil
-	case ResourceVersionExact:
-		if requestedRV == 0 || requestedRV != currentRV {
-			return ErrResourceVersionTooOld
-		}
-		return nil
-	default:
-		return ErrInvalidObject
-	}
-}
-
-func formatRV(rv uint64) string {
-	if rv == 0 {
-		return ""
-	}
-	return strconv.FormatUint(rv, 10)
-}
-
-func rvKey(rv uint64) string {
-	return fmt.Sprintf("%020d", rv)
-}
-
-func parseRVKey(key string) uint64 {
-	key = key[strings.LastIndex(key, "/")+1:]
-	rv, _ := strconv.ParseUint(key, 10, 64)
-	return rv
-}
 
 func objectCursor(obj Unstructured) string {
 	return obj.Metadata.Namespace + "\x00" + obj.Metadata.Name + "\x00" + obj.Metadata.UID
@@ -321,8 +96,8 @@ func cloneStringMap[M ~map[string]string](m M) M {
 		return nil
 	}
 	copied := make(M, len(m))
-	for k, v := range m {
-		copied[k] = v
+	for key, value := range m {
+		copied[key] = value
 	}
 	return copied
 }
@@ -435,16 +210,16 @@ func rawScalarString(raw json.RawMessage) (string, bool) {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return "", false
 	}
-	switch v := value.(type) {
+	switch typed := value.(type) {
 	case string:
-		return v, true
+		return typed, true
 	case bool:
-		if v {
+		if typed {
 			return "true", true
 		}
 		return "false", true
 	case float64:
-		return fmt.Sprint(v), true
+		return fmt.Sprint(typed), true
 	default:
 		return "", false
 	}
@@ -844,9 +619,10 @@ func sortedUnique(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
-	sort.Strings(values)
-	out := values[:0]
-	for _, value := range values {
+	slices := append([]string(nil), values...)
+	sort.Strings(slices)
+	out := slices[:0]
+	for _, value := range slices {
 		if value == "" {
 			continue
 		}
@@ -887,109 +663,4 @@ func normalizeStorePrefix(prefix string) string {
 		return ""
 	}
 	return prefix + "/"
-}
-
-func selectorHash(selector Selector) string {
-	if len(selector.requirements) == 0 {
-		return ""
-	}
-	raw, err := json.Marshal(selector.requirements)
-	if err != nil {
-		return ""
-	}
-	sum := sha256.Sum256(raw)
-	return base64.RawURLEncoding.EncodeToString(sum[:])
-}
-
-func encodeContinueToken(token continueToken) (string, error) {
-	raw, err := json.Marshal(token)
-	if err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-func decodeContinueToken(value string) (continueToken, error) {
-	if strings.TrimSpace(value) == "" {
-		return continueToken{}, nil
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil {
-		return continueToken{}, fmt.Errorf("%w: invalid continue token", ErrInvalidObject)
-	}
-	var token continueToken
-	if err := json.Unmarshal(raw, &token); err != nil {
-		return continueToken{}, fmt.Errorf("%w: invalid continue token", ErrInvalidObject)
-	}
-	return token, nil
-}
-
-func lockKeyFromRef(ref objectRef) string {
-	return ref.Resource + "\x00" + ref.Namespace + "\x00" + ref.Name
-}
-
-func decodeAdmissionRequest(obj Unstructured) (AdmissionRequestSpec, AdmissionRequestStatus, error) {
-	typed, err := unstructuredToTyped[AdmissionRequestSpec, AdmissionRequestStatus](&obj)
-	if err != nil {
-		return AdmissionRequestSpec{}, AdmissionRequestStatus{}, err
-	}
-	return typed.Spec, typed.Status, nil
-}
-
-func encodeAdmissionRequest(meta Metadata, spec AdmissionRequestSpec, status AdmissionRequestStatus) (*Unstructured, error) {
-	return typedToUnstructured(&Object[AdmissionRequestSpec, AdmissionRequestStatus]{
-		APIVersion: "cluster.d7z.net/v1",
-		Kind:       "AdmissionRequest",
-		Metadata:   meta,
-		Spec:       spec,
-		Status:     status,
-	})
-}
-
-func admissionTargetCommit(spec AdmissionRequestSpec) (commitRequest, *Unstructured, error) {
-	if spec.Object == nil {
-		return commitRequest{}, nil, ErrInvalidObject
-	}
-	target := cloneUnstructured(*spec.Object)
-	ref := objectRef{Resource: spec.Resource, Namespace: spec.Namespace, Name: spec.Name}
-	expectedRV, err := parseOptionalRV(spec.Precondition.ResourceVersion)
-	if err != nil {
-		return commitRequest{}, nil, err
-	}
-	req := commitRequest{
-		Ref:              ref,
-		Object:           &target,
-		EventAnnotations: cloneAnnotations(spec.EventAnnotations),
-	}
-	switch spec.Operation {
-	case AdmissionCreate:
-		req.Op = commitCreate
-		req.EventType = WatchAdded
-		req.Changed = changedPaths(nil, &target, SubresourceSpec)
-	case AdmissionUpdate:
-		if spec.OldObject == nil {
-			return commitRequest{}, nil, ErrInvalidObject
-		}
-		req.Op = commitUpdate
-		req.ExpectedRV = expectedRV
-		req.EventType = WatchModified
-		req.Changed = changedPaths(spec.OldObject, &target, spec.Subresource)
-	case AdmissionDelete:
-		if spec.OldObject == nil {
-			return commitRequest{}, nil, ErrInvalidObject
-		}
-		req.ExpectedRV = expectedRV
-		if len(spec.OldObject.Metadata.Finalizers) > 0 && spec.OldObject.Metadata.DeletionTimestamp == nil {
-			req.Op = commitUpdate
-			req.EventType = WatchModified
-			req.Changed = changedPaths(spec.OldObject, &target, SubresourceSpec)
-		} else {
-			req.Op = commitDelete
-			req.EventType = WatchDeleted
-			req.Changed = changedPaths(spec.OldObject, &target, SubresourceSpec)
-		}
-	default:
-		return commitRequest{}, nil, ErrInvalidObject
-	}
-	return req, &target, nil
 }

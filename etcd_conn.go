@@ -83,12 +83,12 @@ func NewEtcd(u *url.URL) (*clientv3.Client, error) {
 
 	var parsedOpts []EtcdOption
 
-	tlsConfig, err := loadTLSConfigFromFiles(
-		query.Get("ca-file"),
-		query.Get("cert-file"),
-		query.Get("key-file"),
-		query.Get("server_name"),
-	)
+	tlsConfig, err := loadTLSConfig(tlsFiles{
+		CAFile:     query.Get("ca-file"),
+		CertFile:   query.Get("cert-file"),
+		KeyFile:    query.Get("key-file"),
+		ServerName: query.Get("server_name"),
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -121,11 +121,13 @@ func (r *UnstructuredResource) Create(
 	if err := r.def.validateObject(nil, &created, SubresourceSpec); err != nil {
 		return nil, err
 	}
-	if out, handled, err := r.maybeAdmit(ctx, AdmissionCreate, SubresourceSpec, objectRef{
-		Resource:  r.def.Resource,
-		Namespace: created.Metadata.Namespace,
-		Name:      created.Metadata.Name,
-	}, nil, &created, 0, opts.EventAnnotations); handled {
+	if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+		Operation:        AdmissionCreate,
+		Subresource:      SubresourceSpec,
+		Ref:              objectRef{Resource: r.def.Resource, Namespace: created.Metadata.Namespace, Name: created.Metadata.Name},
+		NewObject:        &created,
+		EventAnnotations: opts.EventAnnotations,
+	}); handled {
 		return out, err
 	}
 	return r.commit(ctx, commitRequest{
@@ -285,7 +287,15 @@ func (r *UnstructuredResource) Update(
 	if err != nil {
 		return nil, err
 	}
-	if out, handled, err := r.maybeAdmit(ctx, AdmissionUpdate, SubresourceSpec, ref, oldObj, &updated, expectedRV, opts.EventAnnotations); handled {
+	if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+		Operation:        AdmissionUpdate,
+		Subresource:      SubresourceSpec,
+		Ref:              ref,
+		OldObject:        oldObj,
+		NewObject:        &updated,
+		ExpectedRV:       expectedRV,
+		EventAnnotations: opts.EventAnnotations,
+	}); handled {
 		return out, err
 	}
 	return r.commit(ctx, commitRequest{
@@ -346,7 +356,15 @@ func (r *UnstructuredResource) Patch(
 		if err != nil {
 			return nil, err
 		}
-		if out, handled, err := r.maybeAdmit(ctx, AdmissionUpdate, SubresourceSpec, ref, oldObj, &updated, parseStoredRV(oldObj.Metadata.ResourceVersion), opts.EventAnnotations); handled {
+		if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+			Operation:        AdmissionUpdate,
+			Subresource:      SubresourceSpec,
+			Ref:              ref,
+			OldObject:        oldObj,
+			NewObject:        &updated,
+			ExpectedRV:       parseStoredRV(oldObj.Metadata.ResourceVersion),
+			EventAnnotations: opts.EventAnnotations,
+		}); handled {
 			return out, err
 		}
 		out, err := r.commit(ctx, commitRequest{
@@ -413,7 +431,15 @@ func (r *UnstructuredResource) PatchMetadata(
 		if err != nil {
 			return nil, err
 		}
-		if out, handled, err := r.maybeAdmit(ctx, AdmissionUpdate, SubresourceMetadata, ref, oldObj, &updated, oldRV, opts.EventAnnotations); handled {
+		if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+			Operation:        AdmissionUpdate,
+			Subresource:      SubresourceMetadata,
+			Ref:              ref,
+			OldObject:        oldObj,
+			NewObject:        &updated,
+			ExpectedRV:       oldRV,
+			EventAnnotations: opts.EventAnnotations,
+		}); handled {
 			return out, err
 		}
 		out, err := r.commit(ctx, commitRequest{
@@ -552,7 +578,15 @@ func (r *UnstructuredResource) Delete(ctx context.Context, name string, opts Del
 		case oldObj.Metadata.DeletionTimestamp != nil:
 			return cloneUnstructuredPtr(oldObj), nil
 		}
-		if out, handled, err := r.maybeAdmit(ctx, AdmissionDelete, SubresourceSpec, ref, oldObj, &updated, oldRV, opts.EventAnnotations); handled {
+		if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+			Operation:        AdmissionDelete,
+			Subresource:      SubresourceSpec,
+			Ref:              ref,
+			OldObject:        oldObj,
+			NewObject:        &updated,
+			ExpectedRV:       oldRV,
+			EventAnnotations: opts.EventAnnotations,
+		}); handled {
 			return out, err
 		}
 		out, err := r.commit(ctx, commitRequest{
@@ -771,7 +805,15 @@ func (r *UnstructuredResource) mutateStatus(
 		if err := r.def.validateObject(oldObj, &updated, SubresourceStatus); err != nil {
 			return nil, err
 		}
-		if out, handled, err := r.maybeAdmit(ctx, AdmissionUpdate, SubresourceStatus, ref, oldObj, &updated, oldRV, eventAnnotations); handled {
+		if out, handled, err := r.maybeAdmit(ctx, admissionRequestInput{
+			Operation:        AdmissionUpdate,
+			Subresource:      SubresourceStatus,
+			Ref:              ref,
+			OldObject:        oldObj,
+			NewObject:        &updated,
+			ExpectedRV:       oldRV,
+			EventAnnotations: eventAnnotations,
+		}); handled {
 			return out, err
 		}
 		out, err := r.commit(ctx, commitRequest{

@@ -63,6 +63,27 @@ func memoryURLFactory() clusterURLFactory {
 	}
 }
 
+func badgerURLFactory(t *testing.T) clusterURLFactory {
+	t.Helper()
+	root := t.TempDir()
+	counter := 0
+	return clusterURLFactory{
+		name: "badger",
+		raw: func(t *testing.T, query url.Values) string {
+			t.Helper()
+			counter++
+			if query.Get("node") == "" {
+				query.Set("node", fmt.Sprintf("badger-%d", counter))
+			}
+			return (&url.URL{
+				Scheme:   "badger",
+				Path:     fmt.Sprintf("%s/%d", root, counter),
+				RawQuery: query.Encode(),
+			}).String()
+		},
+	}
+}
+
 func newURLCluster(t *testing.T, factory clusterURLFactory, query url.Values) *Cluster {
 	t.Helper()
 	copiedQuery := url.Values{}

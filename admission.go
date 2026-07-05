@@ -5,6 +5,16 @@ import (
 	"time"
 )
 
+type admissionRequestInput struct {
+	Operation        AdmissionOperation
+	Subresource      Subresource
+	Ref              objectRef
+	OldObject        *Unstructured
+	NewObject        *Unstructured
+	ExpectedRV       uint64
+	EventAnnotations Annotations
+}
+
 type AdmissionRequestResource struct {
 	raw *Resource[AdmissionRequestSpec, AdmissionRequestStatus]
 }
@@ -50,17 +60,8 @@ func (c *Cluster) RejectAdmission(ctx context.Context, name string, opts Admissi
 	return unstructuredToTyped[AdmissionRequestSpec, AdmissionRequestStatus](req)
 }
 
-func (r *UnstructuredResource) maybeAdmit(
-	ctx context.Context,
-	operation AdmissionOperation,
-	subresource Subresource,
-	ref objectRef,
-	oldObj *Unstructured,
-	newObj *Unstructured,
-	expectedRV uint64,
-	eventAnnotations Annotations,
-) (*Unstructured, bool, error) {
-	rules := r.def.admissionRules(operation, subresource)
+func (r *UnstructuredResource) maybeAdmit(ctx context.Context, input admissionRequestInput) (*Unstructured, bool, error) {
+	rules := r.def.admissionRules(input.Operation, input.Subresource)
 	if len(rules) == 0 {
 		return nil, false, nil
 	}
@@ -76,27 +77,27 @@ func (r *UnstructuredResource) maybeAdmit(
 	}
 	now := time.Now().UTC()
 	precondition := AdmissionPrecondition{}
-	if operation == AdmissionCreate {
+	if input.Operation == AdmissionCreate {
 		precondition.MustNotExist = true
 	} else {
 		precondition.MustExist = true
-		precondition.ResourceVersion = formatRV(expectedRV)
+		precondition.ResourceVersion = formatRV(input.ExpectedRV)
 	}
 	requestObj, err := encodeAdmissionRequest(Metadata{Name: requestName}, AdmissionRequestSpec{
 		Rules:             admissionRuleNames(rules),
-		Operation:         operation,
-		Resource:          ref.Resource,
+		Operation:         input.Operation,
+		Resource:          input.Ref.Resource,
 		APIVersion:        r.def.APIVersion,
 		Kind:              r.def.Kind,
 		Namespaced:        r.def.Namespaced,
-		Namespace:         ref.Namespace,
-		Name:              ref.Name,
-		Subresource:       subresource,
+		Namespace:         input.Ref.Namespace,
+		Name:              input.Ref.Name,
+		Subresource:       input.Subresource,
 		Precondition:      precondition,
 		SchemaFingerprint: r.def.SchemaFingerprint,
-		OldObject:         cloneUnstructuredPtr(oldObj),
-		Object:            cloneUnstructuredPtr(newObj),
-		EventAnnotations:  cloneAnnotations(eventAnnotations),
+		OldObject:         cloneUnstructuredPtr(input.OldObject),
+		Object:            cloneUnstructuredPtr(input.NewObject),
+		EventAnnotations:  cloneAnnotations(input.EventAnnotations),
 		CreatedByNode:     r.cluster.options.NodeName,
 		ExpiresAt:         now.Add(timeout),
 	}, AdmissionRequestStatus{
@@ -105,7 +106,7 @@ func (r *UnstructuredResource) maybeAdmit(
 	if err != nil {
 		return nil, true, err
 	}
-	if _, err := r.cluster.store.beginAdmission(ctx, beginAdmissionRequest{Request: requestObj, Target: ref}); err != nil {
+	if _, err := r.cluster.store.beginAdmission(ctx, beginAdmissionRequest{Request: requestObj, Target: input.Ref}); err != nil {
 		return nil, true, err
 	}
 	out, err := r.waitAdmission(ctx, requestName)

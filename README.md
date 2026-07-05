@@ -38,6 +38,15 @@ defer c.Close()
 - `admission_terminal_retention`：终态 admission request 最小保留时间，默认 `10m`。
 - `watch_buffer_size`：每个 watch channel 缓冲区大小，默认 `256`。
 
+`etcd://` 额外支持：
+
+- `endpoints`：逗号分隔 endpoint，存在时覆盖 URL host。
+- `ca-file`：CA 证书路径。
+- `cert-file`：客户端证书路径。
+- `key-file`：客户端私钥路径。
+- `server_name`：TLS `ServerName`。
+- `dial_timeout`：连接超时，例如 `5s`。
+
 ## 定义资源
 
 推荐通过 Go struct 生成 schema，再注册 typed resource：
@@ -60,6 +69,9 @@ widgets, err := cluster.Define(c, cluster.TypedResourceDef[WidgetSpec, WidgetSta
 if err != nil {
 	return err
 }
+
+当定义项变复杂时，优先把配置收口到一个定义结构，再传给 `Define` 或 `DefineResource`。
+当前仓库内部也按这个方向整理了 schema 编译和 TLS 配置，避免长参数列表和超长多返回值继续扩散。
 ```
 
 也可以先生成 schema，再用 unstructured 方式注册：

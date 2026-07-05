@@ -70,6 +70,19 @@ type defaultRule struct {
 	Value json.RawMessage
 }
 
+type compiledSchema struct {
+	Raw              json.RawMessage
+	Indexes          []IndexInfo
+	MetadataRules    []fieldRule
+	SpecRules        []fieldRule
+	StatusRules      []fieldRule
+	Defaults         []defaultRule
+	MetadataSchema   map[string]any
+	SpecSchema       map[string]any
+	StatusSchema     map[string]any
+	MetadataWritable map[string]struct{}
+}
+
 func DefineResource(c *Cluster, def ResourceDef) (*UnstructuredResource, error) {
 	if c == nil {
 		return nil, ErrInvalidConfig
@@ -145,31 +158,31 @@ func SchemaFrom[S, T any](apiVersion, kind string, namespaced bool) (json.RawMes
 }
 
 func buildResourceDefinition(def ResourceDef) (*resourceDefinition, error) {
-	compiledSchema, indexes, metadataRules, specRules, statusRules, defaults, metadataSchema, specSchema, statusSchema, metadataWritable, err := compileSchema(def.Schema)
+	compiled, err := compileSchema(def.Schema)
 	if err != nil {
 		return nil, err
 	}
-	fp := schemaFingerprint(compiledSchema)
+	fp := schemaFingerprint(compiled.Raw)
 	resourceDef := &resourceDefinition{
 		Resource:          def.Resource,
 		APIVersion:        def.APIVersion,
 		Kind:              def.Kind,
 		Namespaced:        def.Namespaced,
-		Schema:            compiledSchema,
+		Schema:            compiled.Raw,
 		SchemaFingerprint: fp,
 		Admission:         cloneAdmissionRules(def.Admission),
 		admissionMatches:  compileAdmissionRules(def.Admission),
-		Indexes:           indexes,
-		Selectable:        mergedSelectableFields(def.Selectable, indexes),
+		Indexes:           compiled.Indexes,
+		Selectable:        mergedSelectableFields(def.Selectable, compiled.Indexes),
 		Scale:             cloneScaleDefinition(def.Scale),
-		metadataRules:     metadataRules,
-		specRules:         specRules,
-		statusRules:       statusRules,
-		defaultRules:      defaults,
-		metadataSchema:    metadataSchema,
-		specSchema:        specSchema,
-		statusSchema:      statusSchema,
-		metadataWritable:  metadataWritable,
+		metadataRules:     compiled.MetadataRules,
+		specRules:         compiled.SpecRules,
+		statusRules:       compiled.StatusRules,
+		defaultRules:      compiled.Defaults,
+		metadataSchema:    compiled.MetadataSchema,
+		specSchema:        compiled.SpecSchema,
+		statusSchema:      compiled.StatusSchema,
+		metadataWritable:  compiled.MetadataWritable,
 	}
 	resourceDef.defaultObject = func(obj *Unstructured) error {
 		return applyDefaultRules(obj, resourceDef.defaultRules)
@@ -527,65 +540,65 @@ func jsonFieldName(field reflect.StructField) (string, bool) {
 	return name, required
 }
 
-func compileSchema(raw json.RawMessage) (json.RawMessage, []IndexInfo, []fieldRule, []fieldRule, []fieldRule, []defaultRule, map[string]any, map[string]any, map[string]any, map[string]struct{}, error) {
+func compileSchema(raw json.RawMessage) (*compiledSchema, error) {
 	var value map[string]any
 	if len(raw) == 0 {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("%w: empty schema", ErrInvalidResource)
+		return nil, fmt.Errorf("%w: empty schema", ErrInvalidResource)
 	}
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("%w: invalid schema", ErrInvalidResource)
+		return nil, fmt.Errorf("%w: invalid schema", ErrInvalidResource)
 	}
 	if value["type"] != "object" {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("%w: root schema must be object", ErrInvalidResource)
+		return nil, fmt.Errorf("%w: root schema must be object", ErrInvalidResource)
 	}
 	properties, _ := value["properties"].(map[string]any)
 	for _, key := range []string{"apiVersion", "kind", "metadata", "spec"} {
 		if _, ok := properties[key]; !ok {
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("%w: schema missing %s", ErrInvalidResource, key)
+			return nil, fmt.Errorf("%w: schema missing %s", ErrInvalidResource, key)
 		}
 	}
 	if err := validateStructuralNode("", value); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
-	indexes := make([]IndexInfo, 0)
-	metadataRules := make([]fieldRule, 0)
-	specRules := make([]fieldRule, 0)
-	statusRules := make([]fieldRule, 0)
-	defaults := make([]defaultRule, 0)
-	var metadataSchema map[string]any
-	var specSchema map[string]any
-	var statusSchema map[string]any
-	metadataWritable := make(map[string]struct{})
-	collectSchemaIndexes("", value, &indexes)
+	result := &compiledSchema{
+		Indexes:          make([]IndexInfo, 0),
+		MetadataRules:    make([]fieldRule, 0),
+		SpecRules:        make([]fieldRule, 0),
+		StatusRules:      make([]fieldRule, 0),
+		Defaults:         make([]defaultRule, 0),
+		MetadataWritable: make(map[string]struct{}),
+	}
+	collectSchemaIndexes("", value, &result.Indexes)
 	if metadata, ok := properties["metadata"].(map[string]any); ok {
-		metadataSchema = metadata
-		collectMetadataWritable(metadata, metadataWritable)
-		if err := collectSchemaRules("metadata", metadata, &metadataRules, &defaults); err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		result.MetadataSchema = metadata
+		collectMetadataWritable(metadata, result.MetadataWritable)
+		if err := collectSchemaRules("metadata", metadata, &result.MetadataRules, &result.Defaults); err != nil {
+			return nil, err
 		}
 	}
 	if spec, ok := properties["spec"].(map[string]any); ok {
-		specSchema = spec
-		if err := collectSchemaRules("spec", spec, &specRules, &defaults); err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		result.SpecSchema = spec
+		if err := collectSchemaRules("spec", spec, &result.SpecRules, &result.Defaults); err != nil {
+			return nil, err
 		}
 	}
 	if status, ok := properties["status"].(map[string]any); ok {
-		statusSchema = status
-		if err := collectSchemaRules("status", status, &statusRules, &defaults); err != nil {
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		result.StatusSchema = status
+		if err := collectSchemaRules("status", status, &result.StatusRules, &result.Defaults); err != nil {
+			return nil, err
 		}
 	} else {
-		statusSchema = map[string]any{
+		result.StatusSchema = map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 		}
 	}
 	compiled, err := canonicalJSON(value)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, err
 	}
-	return compiled, indexes, metadataRules, specRules, statusRules, defaults, metadataSchema, specSchema, statusSchema, metadataWritable, nil
+	result.Raw = compiled
+	return result, nil
 }
 
 func collectMetadataWritable(node map[string]any, out map[string]struct{}) {
