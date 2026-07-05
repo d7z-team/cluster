@@ -68,7 +68,12 @@ func OpenEtcd(client *clientv3.Client, options Options) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newCluster(options, newEtcdStore(client, options))
+	c, err := newCluster(options, newEtcdStore(client, options))
+	if err != nil {
+		return nil, err
+	}
+	c.closeHook = client.Close
+	return c, nil
 }
 
 func newCluster(options Options, store resourceStore) (*Cluster, error) {
@@ -92,9 +97,11 @@ func newCluster(options Options, store resourceStore) (*Cluster, error) {
 		nodeLeaseUntil:   time.Now().UTC().Add(options.NodeLeaseTTL),
 	}
 	if err := c.registerBuiltins(); err != nil {
-		_ = store.releaseNode(context.Background(), options.NodeName, token)
-		_ = store.close()
-		return nil, err
+		return nil, errors.Join(
+			err,
+			store.releaseNode(context.Background(), options.NodeName, token),
+			store.close(),
+		)
 	}
 	c.startNodeRenewal()
 	if _, err := c.ensureCurrentNode(ctx); err != nil {
@@ -480,6 +487,7 @@ func (c *Cluster) startNodeRenewal() {
 				renewCancel()
 				if err != nil {
 					c.markNodeLeaseLost()
+					cancel()
 					return
 				}
 				c.mu.Lock()

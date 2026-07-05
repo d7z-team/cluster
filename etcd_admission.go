@@ -133,10 +133,8 @@ func (s *etcdStore) beginAdmission(ctx context.Context, req beginAdmissionReques
 		if txnResp.Succeeded {
 			return cloneUnstructuredPtr(&out), nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return nil, err
 		}
 	}
 	return nil, ErrConflict
@@ -192,12 +190,10 @@ func (s *etcdStore) approveAdmission(ctx context.Context, req approveAdmissionRe
 			return nil, nil, err
 		}
 		if len(lockResp.Kvs) == 0 || string(lockResp.Kvs[0].Value) != req.Name {
-			select {
-			case <-ctx.Done():
-				return nil, nil, ctx.Err()
-			case <-time.After(10 * time.Millisecond):
-				continue
+			if err := waitForEtcdRetry(ctx); err != nil {
+				return nil, nil, err
 			}
+			continue
 		}
 
 		now := time.Now().UTC()
@@ -215,12 +211,10 @@ func (s *etcdStore) approveAdmission(ctx context.Context, req approveAdmissionRe
 			requestOut, err := s.updateAdmissionRequestTxn(ctx, requestRef, currentRaw, metaRaw, metaVersion, updated, []string{"status.approved"})
 			if err != nil {
 				if errors.Is(err, ErrConflict) {
-					select {
-					case <-ctx.Done():
-						return nil, nil, ctx.Err()
-					case <-time.After(10 * time.Millisecond):
-						continue
+					if err := waitForEtcdRetry(ctx); err != nil {
+						return nil, nil, err
 					}
+					continue
 				}
 				return nil, nil, err
 			}
@@ -373,10 +367,8 @@ func (s *etcdStore) approveAdmission(ctx context.Context, req approveAdmissionRe
 		if txnResp.Succeeded {
 			return cloneUnstructuredPtr(&targetOut), cloneUnstructuredPtr(&requestOut), nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return nil, nil, err
 		}
 	}
 	return nil, nil, ErrConflict
@@ -464,10 +456,8 @@ func (s *etcdStore) updateAdmissionRequestTxn(ctx context.Context, ref objectRef
 		if txnResp.Succeeded {
 			return cloneUnstructuredPtr(&out), nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return nil, err
 		}
 	}
 	return nil, ErrConflict
@@ -614,12 +604,10 @@ func (s *etcdStore) finishAdmission(ctx context.Context, name string, mutate fun
 			return nil, err
 		}
 		if len(lockResp.Kvs) == 0 || string(lockResp.Kvs[0].Value) != name {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(10 * time.Millisecond):
-				continue
+			if err := waitForEtcdRetry(ctx); err != nil {
+				return nil, err
 			}
+			continue
 		}
 		mutate(spec, &status)
 		updated, err := encodeAdmissionRequest(current.Metadata, spec, status)
@@ -673,10 +661,8 @@ func (s *etcdStore) finishAdmission(ctx context.Context, name string, mutate fun
 		if txnResp.Succeeded {
 			return cloneUnstructuredPtr(&out), nil
 		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return nil, err
 		}
 	}
 	return nil, ErrConflict

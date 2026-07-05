@@ -11,6 +11,24 @@ import (
 
 const etcdCommitRetries = 16
 
+func waitForEtcdRetry(ctx context.Context) error {
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 type etcdStore struct {
 	client                     *clientv3.Client
 	prefix                     string
@@ -182,10 +200,8 @@ func (s *etcdStore) commit(ctx context.Context, req commitRequest) (*Unstructure
 			return cloneUnstructuredPtr(&out), event, nil
 		}
 		lastErr = ErrConflict
-		select {
-		case <-ctx.Done():
-			return nil, resourceEvent{}, ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return nil, resourceEvent{}, err
 		}
 	}
 	if lastErr != nil {
@@ -499,10 +515,8 @@ func (s *etcdStore) advanceCompactedRV(ctx context.Context, before uint64) error
 		if txnResp.Succeeded {
 			return nil
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
+		if err := waitForEtcdRetry(ctx); err != nil {
+			return err
 		}
 	}
 }

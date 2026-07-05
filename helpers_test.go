@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -257,6 +256,8 @@ func TestUpdateRV(t *testing.T) {
 
 func TestValidateResourceVersionMatch(t *testing.T) {
 	require.NoError(t, validateResourceVersionMatch(5, 5, ResourceVersionExact))
+	require.NoError(t, validateResourceVersionMatch(5, 5, ResourceVersionAny))
+	require.NoError(t, validateResourceVersionMatch(5, 4, ResourceVersionAny))
 	require.ErrorIs(t, validateResourceVersionMatch(5, 4, ResourceVersionExact), ErrResourceVersionTooOld)
 	require.ErrorIs(t, validateResourceVersionMatch(5, 6, ResourceVersionAny), ErrConflict)
 	require.ErrorIs(t, validateResourceVersionMatch(5, 1, ResourceVersionMatch("broken")), ErrInvalidObject)
@@ -385,7 +386,7 @@ func TestDecodeContinueTokenInvalid(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidObject)
 
 	_, err = decodeContinueToken("eyJyZXNvdXJjZSI6")
-	require.True(t, errors.Is(err, ErrInvalidObject))
+	require.ErrorIs(t, err, ErrInvalidObject)
 }
 
 func TestNormalizeStorePrefix(t *testing.T) {

@@ -113,6 +113,9 @@ func allowsFieldSelector(def *resourceDefinition, path string) bool {
 	case "metadata.uid", "metadata.generation", "metadata.deletionTimestamp":
 		return true
 	}
+	if def == nil {
+		return false
+	}
 	for _, field := range def.Selectable {
 		if field.Path == path {
 			return true

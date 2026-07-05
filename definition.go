@@ -879,7 +879,7 @@ func mergedSelectableFields(explicit []SelectableField, indexes []IndexInfo) []S
 			continue
 		}
 		seen[index.Path] = struct{}{}
-		out = append(out, SelectableField{Path: index.Path})
+		out = append(out, SelectableField(index))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].Path < out[j].Path
@@ -888,6 +888,9 @@ func mergedSelectableFields(explicit []SelectableField, indexes []IndexInfo) []S
 }
 
 func definitionEquivalent(a, b *resourceDefinition) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
 	return a.Resource == b.Resource &&
 		a.APIVersion == b.APIVersion &&
 		a.Kind == b.Kind &&

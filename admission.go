@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -146,23 +147,47 @@ func (r *UnstructuredResource) waitAdmission(ctx context.Context, name string) (
 		if !spec.ExpiresAt.IsZero() {
 			wait := time.Until(spec.ExpiresAt)
 			if wait <= 0 {
-				if _, err := r.cluster.store.expireAdmission(context.Background(), name, AdmissionExpiredPhase, "admission timeout"); err == nil {
+				_, err = r.cluster.store.expireAdmission(
+					context.Background(),
+					name,
+					AdmissionExpiredPhase,
+					"admission timeout",
+				)
+				if err == nil {
 					continue
 				}
-			} else {
-				timeoutCh = time.After(wait)
+				if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+					continue
+				}
+				return nil, err
 			}
+			timeoutCh = time.After(wait)
 		}
 		select {
 		case <-ctx.Done():
-			if _, err := r.cluster.store.expireAdmission(context.Background(), name, AdmissionCanceledPhase, ctx.Err().Error()); err == nil {
+			if _, err := r.cluster.store.expireAdmission(
+				context.Background(),
+				name,
+				AdmissionCanceledPhase,
+				ctx.Err().Error(),
+			); err == nil {
 				return nil, ErrAdmissionCanceled
 			}
 			return nil, ctx.Err()
 		case <-timeoutCh:
-			if _, err := r.cluster.store.expireAdmission(context.Background(), name, AdmissionExpiredPhase, "admission timeout"); err == nil {
+			_, err = r.cluster.store.expireAdmission(
+				context.Background(),
+				name,
+				AdmissionExpiredPhase,
+				"admission timeout",
+			)
+			if err == nil {
 				continue
 			}
+			if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return nil, err
 		case _, ok := <-notify:
 			if !ok {
 				return nil, ErrClosed

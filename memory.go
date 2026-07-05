@@ -453,6 +453,7 @@ func (s *memoryStore) commitLocked(req commitRequest) (*Unstructured, resourceEv
 	}
 	event := newStoreEvent(req, oldObj, &eventObj)
 	s.events = append(s.events, event)
+	s.enforceRetentionLocked()
 	return cloneUnstructuredPtr(&eventObj), event, nil
 }
 
@@ -593,7 +594,7 @@ func (s *memoryStore) enforceRetentionLocked() {
 	}
 	before := s.rv - uint64(s.retention)
 	s.compacted = max(s.compacted, before)
-	kept := s.events[:0]
+	kept := make([]resourceEvent, 0, min(s.retention, len(s.events)))
 	for _, event := range s.events {
 		if parseStoredRV(event.ResourceVersion) > before {
 			kept = append(kept, event)

@@ -75,7 +75,6 @@ func NewClusterFromURL(raw string) (*Cluster, error) {
 			_ = client.Close()
 			return nil, err
 		}
-		c.closeHook = client.Close
 		return c, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported scheme %q", ErrInvalidConfig, parsed.Scheme)

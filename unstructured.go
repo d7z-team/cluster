@@ -692,7 +692,7 @@ func (r *UnstructuredResource) UpdateScale(ctx context.Context, name string, sca
 	if err != nil {
 		return nil, err
 	}
-	obj, err := r.PatchScale(ctx, name, raw, PatchOptions{ResourceVersion: opts.ResourceVersion, EventAnnotations: opts.EventAnnotations})
+	obj, err := r.PatchScale(ctx, name, raw, PatchOptions(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -962,8 +962,8 @@ func (r *UnstructuredResource) scaleFromObject(obj Unstructured) (*Scale, error)
 	if r.def.Scale == nil {
 		return nil, ErrUnsupported
 	}
-	specReplicas, _ := int32FieldValue(&obj, r.def.Scale.SpecReplicasPath)
-	statusReplicas, _ := int32FieldValue(&obj, r.def.Scale.StatusReplicasPath)
+	specReplicas := int32FieldValue(&obj, r.def.Scale.SpecReplicasPath)
+	statusReplicas := int32FieldValue(&obj, r.def.Scale.StatusReplicasPath)
 	selector, _ := fieldStringValue(&obj, r.def.Scale.LabelSelectorPath)
 	return &Scale{
 		Metadata: cloneMetadata(obj.Metadata),

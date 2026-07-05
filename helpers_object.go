@@ -603,16 +603,16 @@ func setRawFieldPath(raw json.RawMessage, path string, value any) (json.RawMessa
 	return out, nil
 }
 
-func int32FieldValue(obj *Unstructured, path string) (int32, bool) {
+func int32FieldValue(obj *Unstructured, path string) int32 {
 	raw, ok := fieldRawValue(obj, path)
 	if !ok {
-		return 0, false
+		return 0
 	}
 	var value int32
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return 0, false
+		return 0
 	}
-	return value, true
+	return value
 }
 
 func sortedUnique(values []string) []string {

@@ -10,7 +10,8 @@
 
 ```go
 c, err := cluster.NewClusterFromURL("memory://?node=worker-a")
-if err != nil { return err
+if err != nil {
+	return err
 }
 defer c.Close()
 ```
@@ -47,6 +48,8 @@ defer c.Close()
 - `server_name`：TLS `ServerName`。
 - `dial_timeout`：连接超时，例如 `5s`。
 
+直接调用 `OpenEtcd` 时，`Cluster.Close()` 会负责关闭传入的 etcd client。
+
 ## 定义资源
 
 推荐通过 Go struct 生成 schema，再注册 typed resource：
@@ -69,10 +72,9 @@ widgets, err := cluster.Define(c, cluster.TypedResourceDef[WidgetSpec, WidgetSta
 if err != nil {
 	return err
 }
+```
 
 当定义项变复杂时，优先把配置收口到一个定义结构，再传给 `Define` 或 `DefineResource`。
-当前仓库内部也按这个方向整理了 schema 编译和 TLS 配置，避免长参数列表和超长多返回值继续扩散。
-```
 
 也可以先生成 schema，再用 unstructured 方式注册：
 

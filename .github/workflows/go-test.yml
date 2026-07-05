@@ -5,11 +5,15 @@ on:
     paths:
       - '**.go'
       - 'go.mod'
+      - '.golangci.yml'
+      - 'Makefile'
   pull_request:
     branches: [ "main" ]
     paths:
       - '**.go'
       - 'go.mod'
+      - '.golangci.yml'
+      - 'Makefile'
 
 jobs:
   test:
@@ -22,13 +26,22 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       - name: Install dependencies
         run: go mod download
 
       - name: Boot Test Service
         run: make deps
+
+      - name: Run lint
+        run: make lint
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run build
+        run: go build ./...
 
       - name: Run tests with coverage
         run: make test

@@ -121,6 +121,13 @@ func assertBackendCRUDAndStatus(t *testing.T, factory clusterURLFactory) {
 	statused.Status.Phase = "Failed"
 	_, err = widgets.Update(ctx, statused, UpdateOptions{})
 	require.ErrorIs(t, err, ErrInvalidObject)
+
+	deleted, err := widgets.Delete(ctx, "alpha", DeleteOptions{})
+	require.NoError(t, err)
+	require.Equal(t, statused.Metadata.UID, deleted.Metadata.UID)
+
+	_, err = widgets.Get(ctx, "alpha")
+	require.ErrorIs(t, err, ErrNotFound)
 }
 
 func assertBackendNamespacedResources(t *testing.T, factory clusterURLFactory) {
@@ -522,7 +529,7 @@ func assertBackendOwnerReferenceOrphanPolicy(t *testing.T, factory clusterURLFac
 	require.NoError(t, err)
 	child, err := ns.Create(ctx, "child", widgetSpec{Size: "small", Owner: "team-a"}, CreateOptions{})
 	require.NoError(t, err)
-	child, err = ns.PatchMetadata(ctx, child.Metadata.Name, []byte(`{"ownerReferences":[{"uid":"`+owner.Metadata.UID+`","resource":"orphanwidgets","namespace":"team-a","name":"owner","controller":true}]}`), PatchOptions{ResourceVersion: child.Metadata.ResourceVersion})
+	_, err = ns.PatchMetadata(ctx, child.Metadata.Name, []byte(`{"ownerReferences":[{"uid":"`+owner.Metadata.UID+`","resource":"orphanwidgets","namespace":"team-a","name":"owner","controller":true}]}`), PatchOptions{ResourceVersion: child.Metadata.ResourceVersion})
 	require.NoError(t, err)
 
 	_, err = ns.Delete(ctx, owner.Metadata.Name, DeleteOptions{

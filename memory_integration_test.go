@@ -1150,3 +1150,29 @@ func TestMemoryStoreEventsAfterCompacted(t *testing.T) {
 	_, _, err := store.eventsAfter(context.Background(), 3, resourceScope{}, 10)
 	require.ErrorIs(t, err, ErrResourceVersionTooOld)
 }
+
+func TestMemoryStoreCommitEnforcesEventRetention(t *testing.T) {
+	store := newMemoryStore(Options{NodeName: "retention-test", EventRetentionCount: 2})
+	ctx := context.Background()
+
+	for _, name := range []string{"one", "two", "three"} {
+		obj := &Unstructured{
+			APIVersion: "example.test/v1",
+			Kind:       "Widget",
+			Metadata:   Metadata{Name: name},
+		}
+		_, _, err := store.commit(ctx, commitRequest{
+			Op:        commitCreate,
+			Ref:       objectRef{Resource: "widgets", Name: name},
+			Object:    obj,
+			EventType: WatchAdded,
+			Changed:   []string{"spec"},
+		})
+		require.NoError(t, err)
+	}
+
+	require.Len(t, store.events, 2)
+	require.Equal(t, uint64(1), store.compacted)
+	require.Equal(t, "2", store.events[0].ResourceVersion)
+	require.Equal(t, "3", store.events[1].ResourceVersion)
+}

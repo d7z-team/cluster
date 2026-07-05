@@ -10,6 +10,18 @@ import (
 func TestWhere(t *testing.T) {
 	sel := Where(Label("app").Eq("demo"), Field("spec.size").Eq("small"))
 	require.Len(t, sel.requirements, 2)
+	require.Equal(t, Requirement{
+		target: selectLabel,
+		key:    "app",
+		op:     selectorEquals,
+		values: []string{"demo"},
+	}, sel.requirements[0])
+	require.Equal(t, Requirement{
+		target: selectField,
+		key:    "spec.size",
+		op:     selectorEquals,
+		values: []string{"small"},
+	}, sel.requirements[1])
 }
 
 func TestLabel(t *testing.T) {
@@ -130,6 +142,8 @@ func TestAllowsFieldSelector(t *testing.T) {
 		Namespaced: true,
 		Indexes:    []IndexInfo{{Path: "spec.size"}},
 	}
+	require.True(t, allowsFieldSelector(nil, "metadata.name"))
+	require.False(t, allowsFieldSelector(nil, "spec.size"))
 	require.True(t, allowsFieldSelector(def, "metadata.name"))
 	require.True(t, allowsFieldSelector(def, "metadata.namespace"))
 	require.True(t, allowsFieldSelector(def, "spec.size"))

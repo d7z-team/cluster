@@ -35,6 +35,10 @@ func TestAdmissionRulesEqual(t *testing.T) {
 }
 
 func TestDefinitionEquivalent(t *testing.T) {
+	require.True(t, definitionEquivalent(nil, nil))
+	require.False(t, definitionEquivalent(nil, &resourceDefinition{}))
+	require.False(t, definitionEquivalent(&resourceDefinition{}, nil))
+
 	a := &resourceDefinition{
 		Resource:          "test",
 		APIVersion:        "v1",
